@@ -1,4 +1,4 @@
-# 🌌 Financial & Communication Context Engine
+# 🌌 LedgerLens — Observable AI Financial Assistant
 
 [![CI](https://github.com/haseebkn/financial-context-elt-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/haseebkn/financial-context-elt-pipeline/actions/workflows/ci.yml)
 
