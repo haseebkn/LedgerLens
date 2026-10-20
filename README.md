@@ -4,9 +4,9 @@
 
 ## Watch the 2:47 walkthrough
 
-[![Watch the LedgerLens walkthrough — 2 minutes 47 seconds](docs/media/LedgerLens-thumbnail.png)](https://github.com/haseebkn/LedgerLens/blob/main/docs/media/LedgerLens-walkthrough.mp4)
+[![Watch the LedgerLens walkthrough — 2 minutes 47 seconds](docs/media/LedgerLens-thumbnail.png)](docs/media/LedgerLens-walkthrough.mp4)
 
-A guided tour of ingestion, cited answers, execution traces, metrics, and evaluation. The chat uses synthetic records; provider examples use Plaid Sandbox and Alpaca Paper. [Watch the video](https://github.com/haseebkn/LedgerLens/blob/main/docs/media/LedgerLens-walkthrough.mp4).
+A guided tour of ingestion, cited answers, execution traces, metrics, and evaluation. The chat uses synthetic records; provider examples use Plaid Sandbox and Alpaca Paper. [Watch the video](docs/media/LedgerLens-walkthrough.mp4).
 
 This project is a shipped, tool-using financial context agent over real Plaid, Alpaca, and Google Calendar data. Claude Sonnet answers questions like *"did I go rock climbing recently?"* or *"how much did I spend by category?"* by searching semantic context, running guarded SQL, and invoking deterministic financial tools—not by guessing from the prompt. Every turn streams its tool trace, validates citations against observed provenance, and records token cost and latency.
 
