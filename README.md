@@ -4,9 +4,11 @@
 
 ## Watch the 2:47 walkthrough
 
-[![Watch the LedgerLens walkthrough — 2 minutes 47 seconds](docs/media/LedgerLens-thumbnail.png)](https://github.com/user-attachments/assets/cc8d7947-8761-4341-998c-68d1bab9fa99)
+[![Watch the LedgerLens walkthrough — 2 minutes 47 seconds](docs/media/LedgerLens-thumbnail.png)](#play-the-walkthrough)
 
-A guided tour of ingestion, cited answers, execution traces, metrics, and evaluation. The chat uses synthetic records; provider examples use Plaid Sandbox and Alpaca Paper. [Watch the video](https://github.com/user-attachments/assets/cc8d7947-8761-4341-998c-68d1bab9fa99).
+A guided tour of ingestion, cited answers, execution traces, metrics, and evaluation. The chat uses synthetic records; provider examples use Plaid Sandbox and Alpaca Paper. [Watch the video](#play-the-walkthrough).
+
+### Play the walkthrough
 
 https://github.com/user-attachments/assets/cc8d7947-8761-4341-998c-68d1bab9fa99
 
