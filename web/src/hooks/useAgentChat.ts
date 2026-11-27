@@ -34,7 +34,8 @@ export interface ChatMessage {
   citedRowIds: string[];
   /** Dollar figures the agent's grounding check couldn't tie to a citation. */
   citationWarnings?: CitationWarning[];
-  status: "streaming" | "done" | "error";
+  /** "stopped": the user pressed Stop. Not an error, and not sent as history. */
+  status: "streaming" | "done" | "error" | "stopped";
   errorMessage?: string;
   usage?: UsageSummary;
   traceId?: string;
@@ -147,15 +148,17 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
   }
 }
 
-function failMessage(message: ChatMessage, errorMessage: string): ChatMessage {
+function failMessage(message: ChatMessage, errorMessage: string, status: "error" | "stopped" = "error"): ChatMessage {
   return {
     ...message,
-    status: "error",
+    status,
     errorMessage,
     toolTimeline: message.toolTimeline.map((item) => item.status === "running" ? { ...item, status: "error" } : item),
     spans: message.spans.map((span) => span.status === "running" ? { ...span, status: "error" } : span),
   };
 }
+
+const STOPPED_MESSAGE = "Stopped. You can send another message.";
 
 let idCounter = 0;
 function nextId(): string {
@@ -218,14 +221,14 @@ export function useAgentChat(streamFn: StreamFn = defaultStreamFn) {
           }
         }
         if (!terminal) {
-          updateAssistant((m) => failMessage(m, controller.signal.aborted
-            ? "Response stopped. You can send another message."
-            : "The connection ended before the answer finished. Please try again."));
+          updateAssistant((m) => controller.signal.aborted
+            ? failMessage(m, STOPPED_MESSAGE, "stopped")
+            : failMessage(m, "The connection ended before the answer finished. Please try again."));
         }
       } catch (e) {
-        updateAssistant((m) => failMessage(m, controller.signal.aborted
-          ? "Response stopped. You can send another message."
-          : e instanceof Error ? e.message : String(e)));
+        updateAssistant((m) => controller.signal.aborted
+          ? failMessage(m, STOPPED_MESSAGE, "stopped")
+          : failMessage(m, e instanceof Error ? e.message : String(e)));
       } finally {
         activeRef.current = null;
         setIsStreaming(false);

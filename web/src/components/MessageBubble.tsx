@@ -28,6 +28,10 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           <span className="stream-cursor" aria-hidden />
         )}
 
+        {message.status === "stopped" && (
+          <p className="message-text message-text--stopped">Stopped</p>
+        )}
+
         {message.status === "error" && (
           <p className="message-text message-text--error">
             {message.errorMessage ?? "Something went wrong."}

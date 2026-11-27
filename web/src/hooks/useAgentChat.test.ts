@@ -271,7 +271,10 @@ describe("useAgentChat", () => {
     act(() => { sending = result.current.send("first"); });
     await act(async () => { result.current.stop(); await sending; });
     expect(signals[0]?.aborted).toBe(true);
-    expect(result.current.messages[1]).toMatchObject({ status: "error", errorMessage: expect.stringContaining("stopped") });
+    expect(result.current.messages[1]).toMatchObject({ status: "stopped", errorMessage: expect.stringContaining("Stopped") });
+    expect(result.current.isStreaming).toBe(false);
+    // A stopped answer is not trusted history for the next turn.
+    expect(buildChatHistory(result.current.messages, "next")).toEqual([]);
     act(() => { sending = result.current.send("second"); });
     await act(async () => { unmount(); await sending; });
     expect(signals[1]?.aborted).toBe(true);
