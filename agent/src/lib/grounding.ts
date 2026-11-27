@@ -1,7 +1,7 @@
 /**
- * Numeric grounding: checks every dollar figure in the final answer against
- * the evidence it cites, so "the answer is checked" means the numbers, not
- * only the citation ids.
+ * Numeric grounding: checks every dollar figure and record count in the
+ * final answer against the evidence it cites, so "the answer is checked"
+ * means the numbers, not only the citation ids.
  *
  * A figure is flagged when its sentence has no citation ("uncited"), or
  * when none of the cited rows or computed results contains that amount
@@ -10,7 +10,13 @@
  * the model did in its head (two cited amounts added together) is flagged,
  * because nothing it cites states that total.
  *
- * Scope: dollar amounts only. Counts and percentages are not checked yet.
+ * Counts are claims like "3 transactions" or "five Starbucks purchases":
+ * a number (digits or one–twelve), up to two words, then a record noun. A
+ * count passes when a cited record contains that number (e.g. a
+ * summarize_spend group's count) or when the sentence cites exactly that
+ * many distinct rows. Zero counts ("no transactions") are not checked.
+ *
+ * Not checked: percentages, dates, and counts of other nouns.
  */
 
 const ROW_ID_PATTERN = /^(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+$/;
@@ -18,12 +24,23 @@ const CITATION_PATTERN = /\[([a-zA-Z0-9_-]+)\](?!\()/g;
 // $1,234.56 · -$12 · $ 40.00 · $1.2k is not matched (no shorthand in answers).
 const DOLLAR_PATTERN = /-?\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\$\s?\d+(?:\.\d+)?/g;
 const NUMBER_IN_TEXT = /-?\d[\d,]*(?:\.\d+)?/g;
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+const COUNT_PATTERN = new RegExp(
+  String.raw`\b(\d{1,5}|${Object.keys(NUMBER_WORDS).join("|")})\s+(?:[A-Za-z'-]+\s+){0,2}?` +
+    String.raw`(?:transactions?|purchases?|orders?|trades?|payments?|charges?|deposits?|withdrawals?|` +
+    String.raw`events?|meetings?|appointments?|visits?)\b`,
+  "gi",
+);
 
 export type Evidence = Map<string, Set<number>>;
 
 export interface GroundingWarning {
-  /** The figure exactly as written in the answer, e.g. "$1,234.56". */
+  /** The figure exactly as written in the answer, e.g. "$1,234.56" or "3 transactions". */
   figure: string;
+  kind: "amount" | "count";
   /** The sentence (or list item / table row) the figure appears in. */
   sentence: string;
   reason: "uncited" | "not_in_source";
@@ -122,22 +139,35 @@ function matches(figure: number, candidates: Set<number>, wholeDollars: boolean)
   return false;
 }
 
+function countValue(token: string): number | null {
+  const word = NUMBER_WORDS[token.toLowerCase()];
+  if (word !== undefined) return word;
+  const n = Number(token);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 export function checkNumericGrounding(answerText: string, evidence: Evidence): GroundingWarning[] {
   const warnings: GroundingWarning[] = [];
   for (const sentence of splitClaims(answerText)) {
-    const figures = [...sentence.matchAll(DOLLAR_PATTERN)].map((m) => m[0]);
-    if (figures.length === 0) continue;
+    const amounts = [...sentence.matchAll(DOLLAR_PATTERN)].map((m) => m[0]);
+    const counts = [...sentence.matchAll(COUNT_PATTERN)]
+      .map((m) => ({ figure: m[0], value: countValue(m[1]!) }))
+      .filter((c): c is { figure: string; value: number } => c.value !== null && c.value > 0);
+    if (amounts.length === 0 && counts.length === 0) continue;
     const citedIds = [...new Set([...sentence.matchAll(CITATION_PATTERN)].map((m) => m[1]!))];
     const pool = new Set<number>();
     for (const id of citedIds) evidence.get(id)?.forEach((n) => pool.add(n));
-    for (const figure of figures) {
+    const flag = (figure: string, kind: GroundingWarning["kind"], supported: boolean) => {
+      if (citedIds.length === 0) warnings.push({ figure, kind, sentence, reason: "uncited", citedIds });
+      else if (!supported) warnings.push({ figure, kind, sentence, reason: "not_in_source", citedIds });
+    };
+    for (const figure of amounts) {
       const value = toNumber(figure);
       if (value === null) continue;
-      if (citedIds.length === 0) {
-        warnings.push({ figure, sentence, reason: "uncited", citedIds });
-      } else if (!matches(value, pool, !figure.includes("."))) {
-        warnings.push({ figure, sentence, reason: "not_in_source", citedIds });
-      }
+      flag(figure, "amount", matches(value, pool, !figure.includes(".")));
+    }
+    for (const { figure, value } of counts) {
+      flag(figure, "count", pool.has(value) || citedIds.length === value);
     }
   }
   return warnings;

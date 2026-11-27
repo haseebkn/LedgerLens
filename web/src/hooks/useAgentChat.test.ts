@@ -297,7 +297,7 @@ describe("citation warnings", () => {
   it("collects warnings on the assistant message", async () => {
     const streamFn: StreamFn = () => fakeStream([
       { type: "text_delta", traceId: "t1", text: "Rent was $900." },
-      { type: "citation_warning", traceId: "t1", figure: "$900", sentence: "Rent was $900.", reason: "uncited", citedIds: [] },
+      { type: "citation_warning", traceId: "t1", figure: "$900", kind: "amount", sentence: "Rent was $900.", reason: "uncited", citedIds: [] },
       DONE_EVENT,
     ]);
     const { result } = renderHook(() => useAgentChat(streamFn));

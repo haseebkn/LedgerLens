@@ -74,6 +74,39 @@ describe("checkNumericGrounding", () => {
   });
 });
 
+describe("count grounding", () => {
+  it("passes a count that a cited result states", () => {
+    expect(checkNumericGrounding("Food and Drink had 3 transactions [plaid_a].", evidence())).toEqual([]);
+  });
+
+  it("passes a count equal to the number of rows the sentence cites", () => {
+    expect(checkNumericGrounding("You made two Starbucks purchases [plaid_d] [plaid_c].", evidence())).toEqual([]);
+  });
+
+  it("flags an uncited count and a count no cited record supports", () => {
+    expect(checkNumericGrounding("You had 7 appointments last month.", evidence())).toMatchObject([
+      { figure: "7 appointments", kind: "count", reason: "uncited" },
+    ]);
+    expect(checkNumericGrounding("Travel had five charges [plaid_c].", evidence())).toMatchObject([
+      { figure: "five charges", kind: "count", reason: "not_in_source" },
+    ]);
+  });
+
+  it("allows up to two words between the number and the noun", () => {
+    expect(checkNumericGrounding("Your 4 most recent orders were all filled.", evidence())).toMatchObject([
+      { figure: "4 most recent orders", reason: "uncited" },
+    ]);
+  });
+
+  it("ignores zero counts and numbers that aren't record counts", () => {
+    expect(checkNumericGrounding("There were 0 transactions. It took 3 days and 2 calls.", evidence())).toEqual([]);
+  });
+
+  it("tags dollar warnings as amounts", () => {
+    expect(checkNumericGrounding("Rent was $900.", evidence())).toMatchObject([{ kind: "amount" }]);
+  });
+});
+
 describe("splitClaims", () => {
   it("keeps a trailing citation with its sentence and does not split on decimals", () => {
     expect(splitClaims("It was $4.50. [plaid_d] Next sentence.")).toEqual(["It was $4.50. [plaid_d] Next sentence."]);

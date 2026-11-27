@@ -69,12 +69,14 @@ export interface CitationEvent extends TraceMeta {
 }
 
 /**
- * A dollar figure in the final answer that its sentence's citations don't
- * support: either nothing is cited, or no cited row/result contains it.
+ * A dollar figure or record count in the final answer that its sentence's
+ * citations don't support: either nothing is cited, or no cited row/result
+ * contains it.
  */
 export interface CitationWarningEvent extends TraceMeta {
   type: "citation_warning";
   figure: string;
+  kind: "amount" | "count";
   sentence: string;
   reason: "uncited" | "not_in_source";
   citedIds: string[];

@@ -22,7 +22,7 @@ export interface SpanItem {
 
 export type CitationWarning = Pick<
   Extract<AgentStreamEvent, { type: "citation_warning" }>,
-  "figure" | "sentence" | "reason" | "citedIds"
+  "figure" | "kind" | "sentence" | "reason" | "citedIds"
 >;
 
 export interface ChatMessage {
@@ -136,7 +136,7 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
         ...message,
         citationWarnings: [
           ...(message.citationWarnings ?? []),
-          { figure: event.figure, sentence: event.sentence, reason: event.reason, citedIds: event.citedIds },
+          { figure: event.figure, kind: event.kind, sentence: event.sentence, reason: event.reason, citedIds: event.citedIds },
         ],
       };
     case "error":

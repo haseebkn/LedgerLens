@@ -29,7 +29,7 @@ describe("unverified figures", () => {
     render(
       <MessageText
         text={"Food was $120.50 [plaid_a].\n\nRent was $900."}
-        warnings={[{ figure: "$900", sentence: "Rent was $900.", reason: "uncited", citedIds: [] }]}
+        warnings={[{ figure: "$900", kind: "amount", sentence: "Rent was $900.", reason: "uncited", citedIds: [] }]}
       />,
     );
     const markers = screen.getAllByText("Unverified");
