@@ -743,6 +743,19 @@
   outline-offset: 1px;
 }
 
+.unverified-marker {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  border-radius: 4px;
+  color: var(--warn, #f59e0b);
+  border: 1px dashed currentColor;
+  vertical-align: middle;
+  cursor: help;
+}
+
 .source-drawer {
   position: fixed;
   top: 0;

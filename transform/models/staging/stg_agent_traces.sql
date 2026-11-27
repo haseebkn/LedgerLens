@@ -31,6 +31,8 @@ SELECT
     CAST(raw_payload->>'$.errored' AS BOOLEAN) AS errored,
     (raw_payload->>'$.error_message') AS error_message,
     CAST(raw_payload->>'$.citations_valid' AS BOOLEAN) AS citations_valid,
+    -- Absent on traces written before the numeric grounding check existed.
+    COALESCE(CAST(raw_payload->>'$.citation_warnings' AS INTEGER), 0) AS citation_warnings,
     CAST(raw_payload->>'$.input_tokens' AS INTEGER) AS input_tokens,
     CAST(raw_payload->>'$.output_tokens' AS INTEGER) AS output_tokens,
     CAST(raw_payload->>'$.cache_creation_input_tokens' AS INTEGER) AS cache_creation_input_tokens,
@@ -53,6 +55,7 @@ SELECT
     CAST(NULL AS BOOLEAN) AS errored,
     CAST(NULL AS VARCHAR) AS error_message,
     CAST(NULL AS BOOLEAN) AS citations_valid,
+    CAST(NULL AS INTEGER) AS citation_warnings,
     CAST(NULL AS INTEGER) AS input_tokens,
     CAST(NULL AS INTEGER) AS output_tokens,
     CAST(NULL AS INTEGER) AS cache_creation_input_tokens,

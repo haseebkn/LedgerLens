@@ -20,6 +20,11 @@ export interface SpanItem {
   usage?: NonNullable<Extract<AgentStreamEvent, { type: "span_end" }>["usage"]>;
 }
 
+export type CitationWarning = Pick<
+  Extract<AgentStreamEvent, { type: "citation_warning" }>,
+  "figure" | "sentence" | "reason" | "citedIds"
+>;
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -27,6 +32,8 @@ export interface ChatMessage {
   toolTimeline: ToolTimelineItem[];
   spans: SpanItem[];
   citedRowIds: string[];
+  /** Dollar figures the agent's grounding check couldn't tie to a citation. */
+  citationWarnings?: CitationWarning[];
   status: "streaming" | "done" | "error";
   errorMessage?: string;
   usage?: UsageSummary;
@@ -121,6 +128,14 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
       return message.citedRowIds.includes(event.rowId)
         ? message
         : { ...message, citedRowIds: [...message.citedRowIds, event.rowId] };
+    case "citation_warning":
+      return {
+        ...message,
+        citationWarnings: [
+          ...(message.citationWarnings ?? []),
+          { figure: event.figure, sentence: event.sentence, reason: event.reason, citedIds: event.citedIds },
+        ],
+      };
     case "error":
       return event.fatal ? failMessage(message, event.message) : message;
     case "done":

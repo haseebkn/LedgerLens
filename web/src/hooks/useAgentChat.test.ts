@@ -278,6 +278,21 @@ describe("useAgentChat", () => {
   });
 });
 
+describe("citation warnings", () => {
+  it("collects warnings on the assistant message", async () => {
+    const streamFn: StreamFn = () => fakeStream([
+      { type: "text_delta", traceId: "t1", text: "Rent was $900." },
+      { type: "citation_warning", traceId: "t1", figure: "$900", sentence: "Rent was $900.", reason: "uncited", citedIds: [] },
+      DONE_EVENT,
+    ]);
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => { await result.current.send("rent?"); });
+    expect(result.current.messages[1]).toMatchObject({
+      status: "done", citationWarnings: [{ figure: "$900", reason: "uncited" }],
+    });
+  });
+});
+
 describe("bounded chat history", () => {
   const turn = (index: number, content = `message ${index}`): ChatMessage[] => ["user", "assistant"].map((role) => ({
     id: `${index}-${role}`, role: role as ChatMessage["role"], content, status: "done",

@@ -17,6 +17,7 @@ SELECT
     errored,
     error_message,
     citations_valid,
+    citation_warnings,
     input_tokens,
     output_tokens,
     cache_creation_input_tokens,

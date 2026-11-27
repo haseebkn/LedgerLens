@@ -1,5 +1,29 @@
 import { parseMessageBlocks, type MessagePart } from "../lib/message-parts.js";
 import { CitationChip } from "./CitationChip.js";
+import type { CitationWarning } from "../hooks/useAgentChat.js";
+
+function plainText(parts: MessagePart[]): string {
+  return parts.map((p) => (p.type === "citation" ? "" : p.text)).join("");
+}
+
+/**
+ * Marks a paragraph, list item or table cell that contains a dollar figure
+ * the agent's grounding check flagged. The figure stays visible: the marker
+ * says it isn't backed by what it cites, not that it is wrong.
+ */
+function Unverified({ parts, warnings }: { parts: MessagePart[]; warnings: CitationWarning[] }) {
+  const text = plainText(parts);
+  const hits = warnings.filter((w) => text.includes(w.figure));
+  if (hits.length === 0) return null;
+  const why = hits
+    .map((w) => `${w.figure}: ${w.reason === "uncited" ? "no source cited" : "not found in the cited source"}`)
+    .join("; ");
+  return (
+    <span className="unverified-marker" title={why} aria-label={`Unverified figure. ${why}`}>
+      Unverified
+    </span>
+  );
+}
 
 function Inline({ parts }: { parts: MessagePart[] }) {
   return (
@@ -29,7 +53,7 @@ function Inline({ parts }: { parts: MessagePart[] }) {
  * replaced by citation chips and the agent's markdown (bold, inline code)
  * actually rendered rather than shown as literal asterisks and backticks.
  */
-export function MessageText({ text }: { text: string }) {
+export function MessageText({ text, warnings = [] }: { text: string; warnings?: CitationWarning[] }) {
   const blocks = parseMessageBlocks(text);
 
   return (
@@ -40,6 +64,7 @@ export function MessageText({ text }: { text: string }) {
             {block.items.map((parts, j) => (
               <li key={j}>
                 <Inline parts={parts} />
+                <Unverified parts={parts} warnings={warnings} />
               </li>
             ))}
           </ul>
@@ -61,6 +86,7 @@ export function MessageText({ text }: { text: string }) {
                     {row.map((parts, k) => (
                       <td key={k}>
                         <Inline parts={parts} />
+                        <Unverified parts={parts} warnings={warnings} />
                       </td>
                     ))}
                   </tr>
@@ -71,6 +97,7 @@ export function MessageText({ text }: { text: string }) {
         ) : (
           <p key={i}>
             <Inline parts={block.parts} />
+            <Unverified parts={block.parts} warnings={warnings} />
           </p>
         )
       )}

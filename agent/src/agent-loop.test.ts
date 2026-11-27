@@ -109,6 +109,20 @@ describe("agent loop with deterministic SDK streams", () => {
     expect(events.filter((e) => e.type === "citation")).toMatchObject([{ rowId: "computed_query_real" }]);
   });
 
+  it("emits a citation_warning for a dollar figure its citation doesn't contain", async () => {
+    configureRunner([
+      makeStream({ texts: ["Checking."], tool: true }),
+      makeStream({ texts: ["Total is $12.00 [computed_query_real]. Rent was $900."] }),
+    ], '{"result_id":"computed_query_real","rows":[{"total":12}]}');
+    const events = await collect();
+    expect(events.filter((e) => e.type === "citation_warning")).toMatchObject([
+      { figure: "$900", reason: "uncited" },
+    ]);
+    // Warnings arrive before done, so the UI can mark them as the turn ends.
+    const types = events.map((e) => e.type);
+    expect(types.lastIndexOf("citation_warning")).toBeLessThan(types.indexOf("done"));
+  });
+
   it("counts cache tokens toward the budget and streams a terminal explanation", async () => {
     const executeTools = configureRunner([makeStream({
       tool: true,

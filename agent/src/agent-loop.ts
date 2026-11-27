@@ -11,6 +11,7 @@ import {
   validateCitations,
 } from "./lib/citations.js";
 import { addUsage, emptyUsage, type RawUsage } from "./lib/usage.js";
+import { checkNumericGrounding, extractEvidence, type Evidence } from "./lib/grounding.js";
 import type { AgentStreamEvent, SpanType } from "./streaming-types.js";
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -57,6 +58,7 @@ export async function* runAgentTurn(params: {
 }): AsyncGenerator<AgentStreamEvent> {
   const traceId = params.traceId ?? randomUUID();
   const seenRowIds = new Set<string>();
+  const evidence: Evidence = new Map();
   let usage = emptyUsage();
   const toolNameById = new Map<string, string>();
 
@@ -194,6 +196,7 @@ export async function* runAgentTurn(params: {
             const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
             if (!block.is_error) {
               for (const rowId of extractRowIdsFromToolResult(text)) seenRowIds.add(rowId);
+              extractEvidence(text, evidence);
             }
             if (block.is_error) batchHadError = true;
 
@@ -318,6 +321,13 @@ export async function* runAgentTurn(params: {
     if (!seenRowIds.has(rowId)) continue;
     const [source] = rowId.split("_");
     yield { type: "citation", traceId, rowId, source: source ?? "unknown" };
+  }
+
+  // Numeric grounding runs on the final (post-repair) text. Like citation
+  // repair, it can only annotate what already streamed: the UI marks the
+  // flagged figures "Unverified" rather than hiding them.
+  for (const warning of checkNumericGrounding(finalText, evidence)) {
+    yield { type: "citation_warning", traceId, ...warning };
   }
 
   yield {

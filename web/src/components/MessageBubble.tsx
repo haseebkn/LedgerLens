@@ -22,7 +22,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           </p>
         )}
 
-        {message.content && <MessageText text={message.content} />}
+        {message.content && <MessageText text={message.content} warnings={message.citationWarnings} />}
 
         {message.status === "streaming" && (message.content || message.toolTimeline.length > 0) && (
           <span className="stream-cursor" aria-hidden />

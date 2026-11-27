@@ -19,6 +19,8 @@ export interface TraceRecord {
   errored: boolean;
   error_message: string | null;
   citations_valid: boolean;
+  /** Dollar figures the numeric grounding check could not tie to a citation. */
+  citation_warnings: number;
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;

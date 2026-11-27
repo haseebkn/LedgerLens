@@ -1,6 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { MessageText } from "./MessageText.js";
+
+afterEach(cleanup);
 
 describe("MessageText", () => {
   it("renders agent markdown tables as semantic tables", () => {
@@ -19,5 +21,20 @@ describe("MessageText", () => {
     );
 
     expect(screen.getByTitle("plaid_a")).toBeInTheDocument();
+  });
+});
+
+describe("unverified figures", () => {
+  it("marks only the paragraph that holds a flagged figure", () => {
+    render(
+      <MessageText
+        text={"Food was $120.50 [plaid_a].\n\nRent was $900."}
+        warnings={[{ figure: "$900", sentence: "Rent was $900.", reason: "uncited", citedIds: [] }]}
+      />,
+    );
+    const markers = screen.getAllByText("Unverified");
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.closest("p")).toHaveTextContent("Rent was $900.");
+    expect(markers[0]).toHaveAttribute("title", "$900: no source cited");
   });
 });

@@ -17,6 +17,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
   let errored = false;
   let errorMessage: string | null = null;
   let clientAborted = false;
+  let citationWarnings = 0;
   let citationsValid = true;
   let usage = emptyUsage();
   let totalDurationMs = 0;
@@ -44,6 +45,9 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
         break;
       case "tool_result":
         toolCalls.push({ name: event.name, duration_ms: event.durationMs, is_error: event.isError });
+        break;
+      case "citation_warning":
+        citationWarnings++;
         break;
       case "text_correction":
         repaired = true;
@@ -95,6 +99,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
     errored,
     error_message: errorMessage,
     citations_valid: citationsValid,
+    citation_warnings: citationWarnings,
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
     cache_creation_input_tokens: usage.cacheCreationInputTokens,

@@ -66,6 +66,18 @@ export interface CitationEvent extends TraceMeta {
   source: string;
 }
 
+/**
+ * A dollar figure in the final answer that its sentence's citations don't
+ * support: either nothing is cited, or no cited row/result contains it.
+ */
+export interface CitationWarningEvent extends TraceMeta {
+  type: "citation_warning";
+  figure: string;
+  sentence: string;
+  reason: "uncited" | "not_in_source";
+  citedIds: string[];
+}
+
 export interface TextCorrectionEvent extends TraceMeta {
   type: "text_correction";
   /** Replaces the text streamed so far — issued when citation repair rewrites the answer. */
@@ -109,6 +121,7 @@ export type AgentStreamEvent =
   | ToolCallEvent
   | ToolResultEvent
   | CitationEvent
+  | CitationWarningEvent
   | TextCorrectionEvent
   | ErrorEvent
   | DoneEvent;
