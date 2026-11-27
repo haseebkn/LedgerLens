@@ -726,3 +726,120 @@
 .eval-adjudication p {
   margin: 0;
 }
+
+/* ---------- citations: source drawer, unverified figures ---------- */
+
+.citation-chip--button {
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.citation-chip--button:hover,
+.citation-chip--button:focus-visible {
+  background: color-mix(in srgb, var(--chip-color) 30%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--chip-color) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.source-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px rgb(0 0 0 / 0.25);
+  z-index: 20;
+}
+
+.source-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.source-drawer-title {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.source-drawer-id {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.source-drawer-body {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+}
+
+.source-drawer-subtitle {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.source-drawer-fields {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.source-drawer-field {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0.75rem;
+}
+
+.source-drawer-field dt {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.source-drawer-field dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.source-drawer-summary {
+  margin: 1rem 0;
+  line-height: 1.5;
+}
+
+.source-drawer-raw summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.source-drawer-pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}

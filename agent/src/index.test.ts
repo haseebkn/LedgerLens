@@ -3,12 +3,16 @@ import type { AgentStreamEvent } from "./streaming-types.js";
 
 const mocks = vi.hoisted(() => ({
   runAgentTurn: vi.fn(), writeTraceRecord: vi.fn(), getMetrics: vi.fn(),
-  getTraceById: vi.fn(), getLatestEvalReport: vi.fn(),
+  getTraceById: vi.fn(), getLatestEvalReport: vi.fn(), getRowById: vi.fn(),
 }));
 vi.mock("./agent-loop.js", () => ({ runAgentTurn: mocks.runAgentTurn }));
 vi.mock("./lib/trace-writer.js", () => ({ writeTraceRecord: mocks.writeTraceRecord }));
 vi.mock("./lib/metrics.js", () => ({ getMetrics: mocks.getMetrics, getTraceById: mocks.getTraceById }));
 vi.mock("./lib/eval-reports.js", () => ({ getLatestEvalReport: mocks.getLatestEvalReport }));
+vi.mock("./lib/rows.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/rows.js")>()),
+  getRowById: mocks.getRowById,
+}));
 import { app } from "./index.js";
 
 const done: AgentStreamEvent = {
@@ -97,6 +101,26 @@ describe("HTTP routes (no network or private warehouse required)", () => {
     await reader.read();
     await reader.cancel();
     expect(signal?.aborted).toBe(true);
+  });
+  it("serves a cited row, and rejects malformed ids before touching the warehouse", async () => {
+    mocks.getRowById.mockResolvedValue({ kind: "source", rowId: "plaid_tx1", source: "plaid", payload: { amount: 4.5 } });
+    const ok = await app.request("/api/rows/plaid_tx1");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ kind: "source", payload: { amount: 4.5 } });
+
+    const bad = await app.request(`/api/rows/${encodeURIComponent("plaid_x' OR 1=1")}`);
+    expect(bad.status).toBe(400);
+    expect(mocks.getRowById).toHaveBeenCalledTimes(1);
+
+    mocks.getRowById.mockResolvedValue(null);
+    const gone = await app.request("/api/rows/computed_query_abc");
+    expect(gone.status).toBe(404);
+    expect(((await gone.json()) as { error: string }).error).toContain("no longer available");
+
+    mocks.getRowById.mockRejectedValue(new Error("IO Error: /private/path/financial_engine.db"));
+    const failed = await app.request("/api/rows/plaid_tx1");
+    expect(failed.status).toBe(500);
+    expect(await failed.text()).not.toContain("/private/path");
   });
   it("records a disconnected turn as client_aborted", async () => {
     mocks.runAgentTurn.mockImplementation(async function* (options: { signal: AbortSignal }) {

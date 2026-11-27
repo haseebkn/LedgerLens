@@ -3,6 +3,7 @@ import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { guardSql } from "../lib/sql-guard.js";
 import { queryRows } from "../lib/duckdb.js";
 import { createResultId } from "../lib/result-id.js";
+import { rememberComputedResult } from "../lib/result-store.js";
 
 const QueryWarehouseSchema = z
   .object({
@@ -53,9 +54,11 @@ export const queryWarehouseTool = betaZodTool({
       const rows = await queryRows(guard.sql!);
       if (rows.length === 0) {
         const payload = { sql: guard.sql, rows: [] };
+        const resultId = createResultId("query", payload);
+        rememberComputedResult({ resultId, kind: "query", sql: guard.sql!, rows: [] });
         return JSON.stringify(
           {
-            result_id: createResultId("query", payload),
+            result_id: resultId,
             rows: [],
             note: "Query returned 0 rows.",
           },
@@ -65,9 +68,11 @@ export const queryWarehouseTool = betaZodTool({
       }
       const truncated = rows.length > MAX_RESULT_ROWS_IN_RESPONSE;
       const payload = truncated ? rows.slice(0, MAX_RESULT_ROWS_IN_RESPONSE) : rows;
+      const resultId = createResultId("query", { sql: guard.sql, rows: payload });
+      rememberComputedResult({ resultId, kind: "query", sql: guard.sql!, rows: payload });
       return JSON.stringify(
         {
-          result_id: createResultId("query", { sql: guard.sql, rows: payload }),
+          result_id: resultId,
           rows: payload,
           ...(truncated
             ? {

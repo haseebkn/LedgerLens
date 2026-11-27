@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_MESSAGE_CHARS, useAgentChat } from "../hooks/useAgentChat.js";
 import { MessageBubble } from "./MessageBubble.js";
+import { SourceDrawerProvider } from "./SourceDrawer.js";
 
 const SUGGESTIONS = [
   "How much did I spend on Food and Drink?",
@@ -26,6 +27,7 @@ export function ChatView() {
   };
 
   return (
+    <SourceDrawerProvider>
     <div className="chat-view">
       <div className="chat-scroll" role="log" aria-label="Conversation" aria-live="polite" aria-busy={isStreaming}>
         {messages.length === 0 && (
@@ -69,5 +71,6 @@ export function ChatView() {
         )}
       </form>
     </div>
+    </SourceDrawerProvider>
   );
 }

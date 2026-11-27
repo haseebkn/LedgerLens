@@ -11,6 +11,7 @@ import { buildTraceRecord } from "./lib/trace-accumulator.js";
 import { writeTraceRecord } from "./lib/trace-writer.js";
 import { getMetrics, getTraceById } from "./lib/metrics.js";
 import { getLatestEvalReport } from "./lib/eval-reports.js";
+import { getRowById, ROW_ID_FORMAT } from "./lib/rows.js";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
 const app = new Hono();
@@ -39,6 +40,28 @@ app.get("/api/traces/:id", async (c) => {
     return c.json(trace);
   } catch (e) {
     return c.json({ error: "Failed to fetch trace", detail: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
+
+// Opens a cited row or computed result for the UI's source drawer. Source
+// rows come from the warehouse (parameterized); computed_* ids from the
+// in-process result store. Scope to the signed-in user once auth lands.
+app.get("/api/rows/:rowId", async (c) => {
+  const rowId = c.req.param("rowId");
+  if (!ROW_ID_FORMAT.test(rowId)) return c.json({ error: "Invalid row id" }, 400);
+  try {
+    const row = await getRowById(rowId);
+    if (!row) {
+      return c.json({
+        error: rowId.startsWith("computed_")
+          ? "This computed result is no longer available. Ask the question again to recompute it."
+          : "Row not found",
+      }, 404);
+    }
+    return c.json(row);
+  } catch (e) {
+    console.error("Row lookup failed:", e);
+    return c.json({ error: "Failed to load the source row" }, 500);
   }
 });
 
