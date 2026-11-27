@@ -10,8 +10,11 @@ vector_store
 *.db.wal
 .env
 *.env
+**/*.env
 credentials.json
+**/credentials.json
 token.json
+**/token.json
 .claude
 logs
 target
@@ -21,6 +24,12 @@ target
 **/.mypy_cache
 **/.ruff_cache
 .demo
+# Local media, recordings and scratch output: never needed by an image,
+# and tmp/ holds fixture credentials.
+output
+tmp
+walkthrough
+docs/media
 agent/evals/reports/private
 agent/evals/reports/partial
 infra/**/*.tfstate*
