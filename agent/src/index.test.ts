@@ -3,8 +3,9 @@ import type { AgentStreamEvent } from "./streaming-types.js";
 
 const mocks = vi.hoisted(() => ({
   runAgentTurn: vi.fn(), writeTraceRecord: vi.fn(), getMetrics: vi.fn(),
-  getTraceById: vi.fn(), getLatestEvalReport: vi.fn(), getRowById: vi.fn(),
+  getTraceById: vi.fn(), getLatestEvalReport: vi.fn(), getRowById: vi.fn(), checkReadiness: vi.fn(),
 }));
+vi.mock("./lib/readiness.js", () => ({ checkReadiness: mocks.checkReadiness }));
 vi.mock("./agent-loop.js", () => ({ runAgentTurn: mocks.runAgentTurn }));
 vi.mock("./lib/trace-writer.js", () => ({ writeTraceRecord: mocks.writeTraceRecord }));
 vi.mock("./lib/metrics.js", () => ({ getMetrics: mocks.getMetrics, getTraceById: mocks.getTraceById }));
@@ -36,6 +37,22 @@ beforeEach(() => {
 });
 
 describe("HTTP routes (no network or private warehouse required)", () => {
+  it("serves health without I/O, also under /api for the public ALB", async () => {
+    for (const path of ["/health", "/api/health"]) {
+      expect(await (await app.request(path)).json()).toEqual({ status: "ok" });
+    }
+    expect(mocks.checkReadiness).not.toHaveBeenCalled();
+  });
+  it("reports readiness as 200 or 503 with per-dependency checks", async () => {
+    mocks.checkReadiness.mockResolvedValue({ ready: true, checks: { warehouse: "ok", retrieval: "ok" } });
+    const ok = await app.request("/api/ready");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ status: "ready", checks: { warehouse: "ok", retrieval: "ok" } });
+    mocks.checkReadiness.mockResolvedValue({ ready: false, checks: { warehouse: "failed", retrieval: "ok" } });
+    const down = await app.request("/ready");
+    expect(down.status).toBe(503);
+    expect(await down.json()).toMatchObject({ status: "not_ready", checks: { warehouse: "failed" } });
+  });
   it("returns health without invoking the agent", async () => {
     const res = await app.request("/health");
     expect(await res.json()).toEqual({ status: "ok" });

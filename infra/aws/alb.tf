@@ -29,12 +29,16 @@ resource "aws_lb_target_group" "agent" {
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
 
+  # /health does no I/O. It used to be /api/metrics, which 500s until the
+  # traces table exists, so a fresh deploy was restarted in a loop. The deeper
+  # /ready check is for the deploy smoke test, never for the load balancer.
   health_check {
-    path                = "/api/metrics"
+    path                = "/health"
+    matcher             = "200"
     healthy_threshold   = 2
     unhealthy_threshold = 3
     interval            = 30
-    timeout             = 10
+    timeout             = 5
   }
 }
 

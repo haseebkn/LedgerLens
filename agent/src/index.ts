@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bodyLimit } from "hono/body-limit";
 import { serve } from "@hono/node-server";
@@ -12,11 +12,27 @@ import { writeTraceRecord } from "./lib/trace-writer.js";
 import { getMetrics, getTraceById } from "./lib/metrics.js";
 import { getLatestEvalReport } from "./lib/eval-reports.js";
 import { getRowById, ROW_ID_FORMAT } from "./lib/rows.js";
+import { checkReadiness } from "./lib/readiness.js";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
 const app = new Hono();
 
-app.get("/health", (c) => c.json({ status: "ok" }));
+// Liveness only: no I/O, so it is safe as the load balancer's health check.
+// A fresh deploy with no traces table must still go healthy.
+// The /api/* aliases exist because the public ALB only forwards /api/* to
+// this service; the target-group health check hits the task directly.
+const health = (c: Context) => c.json({ status: "ok" });
+app.get("/health", health);
+app.get("/api/health", health);
+
+// Readiness: the warehouse opens and the retrieval service answers. For the
+// deploy smoke test and operators; not the ALB check (see lib/readiness.ts).
+const ready = async (c: Context) => {
+  const readiness = await checkReadiness();
+  return c.json({ status: readiness.ready ? "ready" : "not_ready", checks: readiness.checks }, readiness.ready ? 200 : 503);
+};
+app.get("/ready", ready);
+app.get("/api/ready", ready);
 
 app.get("/api/metrics", async (c) => {
   try {
