@@ -12,35 +12,59 @@ ALB (HTTPS 443 with ACM certificate; port 80 redirects; WAF rate limits)
    ├── /api/*  ──▶  agent Fargate service (port 8787) ──▶  retrieval Fargate service (port 8100, internal-only via Cloud Map)
    └── /*      ──▶  web Fargate service (nginx, port 80)
 
-agent + retrieval both mount an EFS access point:
-   agent      ──▶  /data           (financial_engine.db, read-only DuckDB queries)
-   retrieval  ──▶  /repo/vector_store  (ChromaDB persistence)
+Data, by default baked into the images' demo targets (data_source = "baked_demo"):
+   agent      ──▶  /data/financial_engine.db   (synthetic warehouse, read-only DuckDB)
+   retrieval  ──▶  /repo/vector_store          (ChromaDB store embedded at build time)
+With data_source = "efs", both paths are EFS access points instead (agent read-only).
 ```
 
 - **No NAT gateway.** Fargate tasks run in public subnets with public IPs and security-group-restricted ingress, saving the ~$32/mo a NAT gateway would cost. This is a reasonable trade for a single-service portfolio deploy — not a pattern to copy for a workload handling real financial data.
-- **No RDS.** The warehouse is a DuckDB file on EFS, matching how it already runs locally — one writer (dbt/the extractors, run out-of-band, not deployed here), many readers (the agent's tools).
+- **No RDS yet.** The warehouse is a DuckDB file, baked into the demo image or on EFS — one writer (dbt, out of band), many readers (the agent's tools). Phase 3 moves serving data to Postgres.
 - **HTTPS only.** The ALB serves `domain_name` with an ACM certificate (TLS 1.2+); port 80 returns a 301 to HTTPS. A WAF on the ALB limits requests per IP, with a tighter limit on the demo sign-in.
 - **Sign-in in the app.** The agent verifies Cognito access tokens on every `/api/*` route except health, readiness and sign-in discovery, and enforces per-user turn and token limits (`agent/src/lib/auth.ts`, `agent/src/lib/usage-limits.ts`).
 
 ## What's deployed vs. what isn't
 
-Terraform here provisions the **serving path**: the agent's chat API, the retrieval service, and the web frontend. It does **not** run the ingestion pipeline (`extract/`), dbt builds, or the embedding backfill (`vector_prep/embed_context.py`) — those populate `financial_engine.db` and the ChromaDB store, which then need to land on the EFS volumes this stack creates (e.g. via a one-off `aws efs` mount from a bastion, or a scheduled ECS task — not included, since running the actual ingestion against live brokerage/bank APIs from a shared cloud environment is a separate decision from standing up the serving infrastructure).
+Terraform here provisions the **serving path**: the agent's chat API, the retrieval service, and the web frontend. It does **not** run the ingestion pipeline (`extract/`), dbt builds, or the embedding backfill (`vector_prep/embed_context.py`). The default deployment needs none of them: it serves the synthetic data baked into the demo images. Serving real data means `data_source = "efs"` and loading `financial_engine.db` and the ChromaDB store onto EFS yourself; that path is not automated, since running live brokerage and bank ingestion from a shared cloud environment is a separate decision.
 
-Agent traces are written to `/data/raw_data/agent_traces` on the warehouse EFS access point so task replacement does not discard them. An out-of-band dbt build must ingest those files before Metrics reflects new traffic. Public evaluation reports ship in the agent image; private and partial reports are excluded from the Docker build context.
+Agent traces are written to the agent container's own disk (`/repo/raw_data`), so a task replacement discards them and the deployed Metrics tab does not update; Phase 5 replaces file traces with OpenTelemetry export. Public evaluation reports ship in the agent image; private and partial reports are excluded from the Docker build context.
 
 Spend controls, from inside out: a per-turn token budget in the agent loop; per-user limits (default 20 turns per hour and 300k tokens per day); a global 3M tokens per day; the WAF's per-IP limits; and a monthly spend limit you set on the Anthropic workspace that owns the key (Console → Settings → Limits). Set that last one before sharing the URL: it is the only one that holds if everything else is misconfigured. Terraform validation in CI does not establish that this stack has run on AWS.
 
 ## Setup
 
+State lives in S3 with a DynamoDB lock. Create both once:
+
 ```bash
-cd infra/aws
-terraform init
-cp terraform.tfvars.example terraform.tfvars   # fill in real secrets, don't commit it
-terraform plan
+cd infra/aws/bootstrap
+terraform init && terraform apply          # prints state_bucket and lock_table
+```
+
+Then, from `infra/aws`:
+
+```bash
+cp backend.hcl.example backend.hcl            # fill in state_bucket; not committed
+cp terraform.tfvars.example terraform.tfvars  # domain_name etc.; holds no secrets
+terraform init -backend-config=backend.hcl
 terraform apply
 ```
 
-Requires AWS credentials in the environment (`aws configure`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with permissions to create VPC, ECS, ECR, EFS, ALB, IAM, Secrets Manager, Cloud Map, and CloudWatch Logs resources.
+Secrets are never Terraform variables, so they never enter state. After the first apply, set their values (and the demo password, below):
+
+```bash
+aws secretsmanager put-secret-value --secret-id financial-context/anthropic-api-key --secret-string "$ANTHROPIC_API_KEY"
+aws secretsmanager put-secret-value --secret-id financial-context/retrieval-service-token --secret-string "$(openssl rand -hex 32)"
+```
+
+Upgrading from a version that took `anthropic_api_key` and `retrieval_service_token` as variables: the `removed` blocks in `secrets.tf` make Terraform forget those secret versions without deleting them. The old local state still contains both values, so rotate them and delete the old state file.
+
+### Data
+
+By default (`data_source = "baked_demo"`) the agent and retrieval services run their images' `demo` targets, which carry the synthetic warehouse and vector store built from `scripts/seed/`. Nothing is mounted and EFS is not created. With `data_source = "efs"` the default targets run and mount EFS instead (the agent read-only); loading data onto it is up to you.
+
+Each service has its own task role. With baked data neither has any AWS permissions; with EFS the agent may only mount its access point read-only and retrieval may write only through its own.
+
+Requires AWS credentials in the environment (`aws configure`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with permissions to create VPC, ECS, ECR, ALB, ACM, WAF, Cognito, IAM, Secrets Manager, Cloud Map and CloudWatch Logs resources (plus EFS with `data_source = "efs"`, and Route 53 records with `route53_zone_id`).
 
 ## Domain, sign-in and the demo account
 

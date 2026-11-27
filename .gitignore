@@ -53,4 +53,5 @@ infra/**/*.tfstate
 infra/**/*.tfstate.*
 infra/**/*.tfplan
 infra/**/terraform.tfvars
+infra/**/backend.hcl
 infra/**/crash.log

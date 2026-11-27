@@ -8,17 +8,11 @@ terraform {
     }
   }
 
-  # No remote backend configured — state is local by default, which is fine
-  # for a single-operator portfolio deploy. A team would add an S3 backend
-  # + DynamoDB lock table here before a second person ever runs `apply`:
-  #
-  # backend "s3" {
-  #   bucket         = "financial-context-tfstate"
-  #   key            = "prod/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "financial-context-tflock"
-  #   encrypt        = true
-  # }
+  # Remote state in S3 with a DynamoDB lock, configured at init time:
+  #   terraform init -backend-config=backend.hcl
+  # (copy backend.hcl.example; create the bucket and table once with
+  # bootstrap/). CI validates with `terraform init -backend=false`.
+  backend "s3" {}
 }
 
 provider "aws" {

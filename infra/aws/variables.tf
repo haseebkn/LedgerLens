@@ -16,18 +16,6 @@ variable "environment" {
   default     = "prod"
 }
 
-variable "anthropic_api_key" {
-  description = "Claude API key for the agent service. Stored in Secrets Manager, never in state-readable plaintext outputs."
-  type        = string
-  sensitive   = true
-}
-
-variable "retrieval_service_token" {
-  description = "Shared-secret bearer token the agent service uses to call the retrieval service."
-  type        = string
-  sensitive   = true
-}
-
 variable "agent_image_tag" {
   description = "Image tag to deploy for the agent service (set by CI after a successful build/push)."
   type        = string
@@ -127,4 +115,15 @@ variable "global_tokens_per_day" {
   description = "Model tokens all users together may use per UTC day. Also set a monthly spend limit on the Anthropic workspace that owns the API key."
   type        = number
   default     = 3000000
+}
+
+variable "data_source" {
+  description = "\"baked_demo\" (default): run the images' demo targets, which carry the synthetic warehouse and vector store; no EFS. \"efs\": run the default targets and mount both from EFS, which you must load yourself."
+  type        = string
+  default     = "baked_demo"
+
+  validation {
+    condition     = contains(["baked_demo", "efs"], var.data_source)
+    error_message = "data_source must be \"baked_demo\" or \"efs\"."
+  }
 }

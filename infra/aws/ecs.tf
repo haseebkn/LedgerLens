@@ -16,16 +16,19 @@ resource "aws_ecs_task_definition" "retrieval" {
   cpu                      = var.retrieval_cpu
   memory                   = var.retrieval_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
+  task_role_arn            = aws_iam_role.retrieval_task.arn
 
-  volume {
-    name = "vector-store"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.vector_store.id
-        iam             = "ENABLED"
+  dynamic "volume" {
+    for_each = local.use_efs ? [1] : []
+    content {
+      name = "vector-store"
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.data[0].id
+        transit_encryption = "ENABLED"
+        authorization_config {
+          access_point_id = aws_efs_access_point.vector_store[0].id
+          iam             = "ENABLED"
+        }
       }
     }
   }
@@ -38,10 +41,11 @@ resource "aws_ecs_task_definition" "retrieval" {
       containerPort = 8100
       protocol      = "tcp"
     }]
-    mountPoints = [{
+    mountPoints = local.use_efs ? [{
       sourceVolume  = "vector-store"
       containerPath = "/repo/vector_store"
-    }]
+      readOnly      = false
+    }] : []
     secrets = [{
       name      = "RETRIEVAL_SERVICE_TOKEN"
       valueFrom = aws_secretsmanager_secret.retrieval_service_token.arn
@@ -84,16 +88,19 @@ resource "aws_ecs_task_definition" "agent" {
   cpu                      = var.agent_cpu
   memory                   = var.agent_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
+  task_role_arn            = aws_iam_role.agent_task.arn
 
-  volume {
-    name = "warehouse"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.data.id
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.warehouse.id
-        iam             = "ENABLED"
+  dynamic "volume" {
+    for_each = local.use_efs ? [1] : []
+    content {
+      name = "warehouse"
+      efs_volume_configuration {
+        file_system_id     = aws_efs_file_system.data[0].id
+        transit_encryption = "ENABLED"
+        authorization_config {
+          access_point_id = aws_efs_access_point.warehouse[0].id
+          iam             = "ENABLED"
+        }
       }
     }
   }
@@ -106,13 +113,16 @@ resource "aws_ecs_task_definition" "agent" {
       containerPort = 8787
       protocol      = "tcp"
     }]
-    mountPoints = [{
+    # Read-only: the agent never writes the warehouse. Traces go to the
+    # container's own disk until Phase 5 exports them (OpenTelemetry).
+    mountPoints = local.use_efs ? [{
       sourceVolume  = "warehouse"
       containerPath = "/data"
-    }]
+      readOnly      = true
+    }] : []
     environment = [
       { name = "DUCKDB_PATH", value = "/data/financial_engine.db" },
-      { name = "RAW_DATA_ROOT", value = "/data/raw_data" },
+      { name = "RAW_DATA_ROOT", value = "/repo/raw_data" },
       { name = "RETRIEVAL_SERVICE_URL", value = "http://retrieval.internal:8100" },
       { name = "AUTH_MODE", value = "cognito" },
       { name = "COGNITO_USER_POOL_ID", value = aws_cognito_user_pool.main.id },
