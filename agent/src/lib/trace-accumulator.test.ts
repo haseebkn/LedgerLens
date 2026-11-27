@@ -98,6 +98,15 @@ describe("buildTraceRecord", () => {
     });
   });
 
+  it("records a disconnected turn as client_aborted, not as a generic error", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 200, isError: true },
+      { type: "error", traceId: "t1", message: "Client disconnected", fatal: true, code: "client_aborted" },
+    ];
+    expect(buildTraceRecord(events, "q")).toMatchObject({ stop_reason: "client_aborted", iterations: 1, errored: true });
+  });
+
   it("uses authoritative done totals without double-counting span fallback usage", () => {
     const events: AgentStreamEvent[] = [
       { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },

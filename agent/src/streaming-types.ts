@@ -78,6 +78,8 @@ export interface ErrorEvent extends TraceMeta {
   message: string;
   /** Set when the loop can't continue (vs. a tool-level error it can recover from). */
   fatal: boolean;
+  /** Machine-readable class, e.g. "client_aborted" when the browser left mid-turn. */
+  code?: "client_aborted";
 }
 
 export interface UsageSummary {

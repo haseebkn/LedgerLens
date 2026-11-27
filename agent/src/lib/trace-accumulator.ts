@@ -16,6 +16,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
   let repaired = false;
   let errored = false;
   let errorMessage: string | null = null;
+  let clientAborted = false;
   let citationsValid = true;
   let usage = emptyUsage();
   let totalDurationMs = 0;
@@ -56,6 +57,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
         if (event.fatal) {
           errored = true;
           errorMessage = event.message;
+          if (event.code === "client_aborted") clientAborted = true;
         }
         break;
       case "done":
@@ -78,7 +80,10 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
     usage = spanUsage;
     iterations = attemptedIterations;
     totalDurationMs = spanDurationMs;
-    if (errored) stopReason = "error";
+    // A disconnect is not a model or tool failure; record it separately so
+    // the Metrics tab can report an abort rate instead of hiding it.
+    if (clientAborted) stopReason = "client_aborted";
+    else if (errored) stopReason = "error";
   }
 
   return {

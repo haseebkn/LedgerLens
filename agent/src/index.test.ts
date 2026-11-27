@@ -98,6 +98,21 @@ describe("HTTP routes (no network or private warehouse required)", () => {
     await reader.cancel();
     expect(signal?.aborted).toBe(true);
   });
+  it("records a disconnected turn as client_aborted", async () => {
+    mocks.runAgentTurn.mockImplementation(async function* (options: { signal: AbortSignal }) {
+      yield { type: "text_delta", traceId: "route-test", text: "Partial" };
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+    const res = await chat({ message: "hello" });
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await vi.waitFor(() => expect(mocks.writeTraceRecord).toHaveBeenCalled());
+    expect(mocks.writeTraceRecord).toHaveBeenCalledWith(expect.objectContaining({ stop_reason: "client_aborted" }));
+  });
   it("serves metrics and reports using deterministic service responses", async () => {
     mocks.getMetrics.mockResolvedValue({ turns: 2, toolCallDistribution: [], turnsPerDay: [] });
     const metrics = await app.request("/api/metrics");

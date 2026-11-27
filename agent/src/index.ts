@@ -79,6 +79,7 @@ app.post("/api/chat", async (c) => {
     const events: AgentStreamEvent[] = [];
     const controller = new AbortController();
     stream.onAbort(() => controller.abort());
+    c.req.raw.signal?.addEventListener("abort", () => controller.abort(), { once: true });
     try {
       for await (const event of runAgentTurn({ history, userMessage: parsed.data.message, signal: controller.signal })) {
         events.push(event);
@@ -95,7 +96,10 @@ app.post("/api/chat", async (c) => {
       if (!stream.aborted) await stream.write(toSseFrame(event));
     } finally {
       if (controller.signal.aborted && !events.some((event) => event.type === "done" || (event.type === "error" && event.fatal))) {
-        events.push({ type: "error", traceId: events[0]?.traceId ?? "unknown", fatal: true, message: "Client disconnected" });
+        events.push({
+          type: "error", traceId: events[0]?.traceId ?? "unknown", fatal: true,
+          message: "Client disconnected", code: "client_aborted",
+        });
       }
       // Trace persistence is best-effort: a disk/permissions failure here
       // must never take down the response the user already received.
