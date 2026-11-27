@@ -15,14 +15,14 @@ agent/ (Node, Hono)  ──HTTP──▶  vector_prep/retrieval_service.py (Pyth
 financial_engine.db            vector_store/
 ```
 
-The Python side stays Python (ChromaDB and sentence-transformers have no reason to move); the Node side owns the LLM loop, the SQL-generation tool, and the HTTP API. See `sql-guard.ts`'s header comment for why `query_warehouse` needs its own validation layer even though the DuckDB connection is opened read-only.
+The Python side stays Python (ChromaDB and sentence-transformers have no reason to move); the Node side owns the LLM loop, the SQL-generation tool, and the HTTP API. The security boundary for `query_warehouse` is the engine: `lib/duckdb.ts` opens the warehouse read-only with `enable_external_access=false`, extension autoload off and `lock_configuration=true`, so no query (including one built with `query()` from split strings) can read files or the network or undo those settings. `lib/sql-guard.ts` is a helpful error layer on top that turns mistakes into repair guidance.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
 | `search_context` | Semantic search over calendar/Plaid/Alpaca narrative rows, via the retrieval service |
-| `query_warehouse` | Freeform read-only SQL, validated by `lib/sql-guard.ts` (single-statement SELECT, table allowlist, banned-function blocklist, LIMIT enforcement) |
+| `query_warehouse` | Freeform read-only SQL on the sandboxed connection (`lib/duckdb.ts`), pre-checked by `lib/sql-guard.ts` (single-statement SELECT, table allowlist, banned-function blocklist outside string literals, LIMIT enforcement) |
 | `get_portfolio_snapshot` | Fixed query: latest account balance + 5 most recent trades |
 | `summarize_spend` | Fixed aggregation: spend/income totals by category or time bucket |
 
@@ -61,7 +61,9 @@ curl -N -X POST http://localhost:8787/api/chat \
   -d '{"message": "How much did I spend on coffee last month?"}'
 ```
 
-Streams Server-Sent Events per `src/streaming-types.ts` — `text_delta`, `thinking_delta`, `span_start`/`span_end` (llm_call / tool_exec / citation_validation, with per-call token usage on llm_call spans — this is the waterfall data), `tool_call`, `tool_result`, `citation`, `text_correction` (issued if citation repair rewrites the answer after it already streamed), `error`, `done`.
+Streams Server-Sent Events per `src/streaming-types.ts` — `text_delta`, `thinking_delta`, `span_start`/`span_end` (llm_call / tool_exec / citation_validation, with per-call token usage on llm_call spans — this is the waterfall data), `tool_call`, `tool_result`, `citation`, `citation_warning` (a dollar figure or record count its sentence's citations don't support), `text_correction` (issued if citation repair rewrites the answer after it already streamed), `error` (with `code: "client_aborted"` when the browser disconnects), `done` (with `timeToFirstTokenMs`).
+
+`GET /api/rows/:rowId` returns the record behind a citation: a warehouse row, an Alpaca account snapshot, or a computed result's SQL and rows (kept in memory for an hour). It is not yet scoped per user.
 
 ## Observability
 
