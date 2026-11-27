@@ -281,6 +281,18 @@ describe("useAgentChat", () => {
   });
 });
 
+describe("first-token timing", () => {
+  it("keeps the agent's first-token time from the done event", async () => {
+    const streamFn: StreamFn = () => fakeStream([
+      { type: "text_delta", traceId: "t1", text: "Hi" },
+      { ...DONE_EVENT, timeToFirstTokenMs: 354 } as AgentStreamEvent,
+    ]);
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => { await result.current.send("q"); });
+    expect(result.current.messages[1]).toMatchObject({ status: "done", timeToFirstTokenMs: 354 });
+  });
+});
+
 describe("citation warnings", () => {
   it("collects warnings on the assistant message", async () => {
     const streamFn: StreamFn = () => fakeStream([

@@ -24,6 +24,7 @@ SELECT
     cache_read_input_tokens,
     cost_usd,
     total_duration_ms,
+    time_to_first_token_ms,
     tool_calls_json,
     extracted_at,
     run_id

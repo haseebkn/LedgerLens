@@ -27,6 +27,8 @@ export interface TraceRecord {
   cache_read_input_tokens: number;
   cost_usd: number;
   total_duration_ms: number;
+  /** Turn start to first model text; null when the model wrote no text. */
+  time_to_first_token_ms: number | null;
   tool_calls: { name: string; duration_ms: number; is_error: boolean }[];
 }
 

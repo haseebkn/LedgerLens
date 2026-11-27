@@ -21,6 +21,8 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
   let citationsValid = true;
   let usage = emptyUsage();
   let totalDurationMs = 0;
+  let timeToFirstTokenMs: number | null = null;
+  let spanFirstTokenMs: number | null = null;
   let receivedDone = false;
   let spanUsage = emptyUsage();
   let spanDurationMs = 0;
@@ -33,6 +35,11 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
         if (event.spanType === "llm_call") attemptedIterations++;
         break;
       case "span_end":
+        // Fallback for turns with no done event: closed spans before the
+        // first text-producing one, plus that span's own first-token time.
+        if (spanFirstTokenMs === null && event.timeToFirstTokenMs !== undefined) {
+          spanFirstTokenMs = spanDurationMs + event.timeToFirstTokenMs;
+        }
         spanDurationMs += event.durationMs;
         if (event.spanType === "llm_call" && event.usage) {
           spanUsage = addUsage(spanUsage, {
@@ -71,6 +78,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
         repaired = repaired || event.repaired;
         usage = event.usage;
         totalDurationMs = event.totalDurationMs;
+        timeToFirstTokenMs = event.timeToFirstTokenMs ?? null;
         break;
     }
   }
@@ -84,6 +92,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
     usage = spanUsage;
     iterations = attemptedIterations;
     totalDurationMs = spanDurationMs;
+    timeToFirstTokenMs = spanFirstTokenMs;
     // A disconnect is not a model or tool failure; record it separately so
     // the Metrics tab can report an abort rate instead of hiding it.
     if (clientAborted) stopReason = "client_aborted";
@@ -106,6 +115,7 @@ export function buildTraceRecord(events: AgentStreamEvent[], question: string, m
     cache_read_input_tokens: usage.cacheReadInputTokens,
     cost_usd: usage.estimatedCostUsd,
     total_duration_ms: totalDurationMs,
+    time_to_first_token_ms: timeToFirstTokenMs,
     tool_calls: toolCalls,
   };
 }

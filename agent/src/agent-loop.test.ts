@@ -109,6 +109,40 @@ describe("agent loop with deterministic SDK streams", () => {
     expect(events.filter((e) => e.type === "citation")).toMatchObject([{ rowId: "computed_query_real" }]);
   });
 
+  it("records time to first token on text-producing spans and on done", async () => {
+    configureRunner([
+      makeStream({ texts: [], tool: true }),
+      makeStream({ texts: ["Answer."] }),
+    ]);
+    const events = await collect();
+    const llmEnds = events.filter((e) => e.type === "span_end" && e.spanType === "llm_call");
+    expect(llmEnds).toHaveLength(2);
+    // The tool-only call wrote no text, so it has no first-token time.
+    expect(llmEnds[0]).not.toHaveProperty("timeToFirstTokenMs");
+    expect(llmEnds[1]).toMatchObject({ timeToFirstTokenMs: expect.any(Number) });
+    const done = events.find((e) => e.type === "done");
+    expect(done).toMatchObject({ timeToFirstTokenMs: expect.any(Number) });
+    if (done?.type === "done") expect(done.timeToFirstTokenMs!).toBeLessThanOrEqual(done.totalDurationMs);
+  });
+
+  it("keeps the first-token time on a span that fails mid-answer", async () => {
+    const stream = makeStream({ texts: ["Partial"] });
+    stream.finalMessage.mockRejectedValue(new Error("overloaded"));
+    configureRunner([stream]);
+    const events = await collect();
+    expect(events.find((e) => e.type === "span_end")).toMatchObject({
+      isError: true, timeToFirstTokenMs: expect.any(Number),
+    });
+  });
+
+  it("reports no first-token time when the model never writes text", async () => {
+    testEnv.MAX_TOOL_ITERATIONS = 1;
+    configureRunner([makeStream({ tool: true })]);
+    const done = (await collect()).find((e) => e.type === "done");
+    // The iteration-limit notice is the loop's own text, not the model's.
+    expect(done).toMatchObject({ timeToFirstTokenMs: null });
+  });
+
   it("emits a citation_warning for a dollar figure its citation doesn't contain", async () => {
     configureRunner([
       makeStream({ texts: ["Checking."], tool: true }),

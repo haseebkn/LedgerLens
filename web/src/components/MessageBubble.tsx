@@ -66,6 +66,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
                 <dd>{message.usage.cacheReadInputTokens}</dd>
                 <dt>Cost</dt>
                 <dd>{formatUsd(message.usage.estimatedCostUsd)}</dd>
+                {typeof message.timeToFirstTokenMs === "number" && (
+                  <>
+                    <dt>First token</dt>
+                    <dd>{message.timeToFirstTokenMs} ms</dd>
+                  </>
+                )}
               </dl>
             )}
           </div>

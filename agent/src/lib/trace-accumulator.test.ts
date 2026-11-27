@@ -98,6 +98,22 @@ describe("buildTraceRecord", () => {
     });
   });
 
+  it("records the turn's first-token time from done", () => {
+    const done = DONE();
+    if (done.type === "done") done.timeToFirstTokenMs = 412;
+    expect(buildTraceRecord([done], "q").time_to_first_token_ms).toBe(412);
+  });
+
+  it("estimates first-token time from closed spans when a turn has no done event", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 800, isError: false },
+      { type: "span_end", traceId: "t1", spanId: "tool1", spanType: "tool_exec", durationMs: 200, isError: false },
+      { type: "span_end", traceId: "t1", spanId: "llm2", spanType: "llm_call", durationMs: 500, isError: true, timeToFirstTokenMs: 150 },
+      { type: "error", traceId: "t1", message: "Client disconnected", fatal: true, code: "client_aborted" },
+    ];
+    expect(buildTraceRecord(events, "q").time_to_first_token_ms).toBe(1150);
+  });
+
   it("records a disconnected turn as client_aborted, not as a generic error", () => {
     const events: AgentStreamEvent[] = [
       { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },

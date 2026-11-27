@@ -38,6 +38,8 @@ export interface ChatMessage {
   status: "streaming" | "done" | "error" | "stopped";
   errorMessage?: string;
   usage?: UsageSummary;
+  /** ms from send to the first model text, as measured by the agent. */
+  timeToFirstTokenMs?: number | null;
   traceId?: string;
 }
 
@@ -140,7 +142,10 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
     case "error":
       return event.fatal ? failMessage(message, event.message) : message;
     case "done":
-      return { ...message, status: "done", usage: event.usage, traceId: event.traceId };
+      return {
+        ...message, status: "done", usage: event.usage, traceId: event.traceId,
+        timeToFirstTokenMs: event.timeToFirstTokenMs,
+      };
     case "thinking_delta":
       return message; // not rendered yet — reserved for a future "show thinking" toggle
     default:

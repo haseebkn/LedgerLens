@@ -83,6 +83,9 @@ export async function* runAgentTurn(params: {
   let finalStopReason = "end_turn";
   let iterationCount = 0;
   const startedAt = Date.now();
+  // Time from the start of the turn to the first model text the user sees.
+  // Notices the loop appends itself (budget/iteration limits) don't count.
+  let firstTokenMs: number | null = null;
 
   // Tracks whichever span is currently open, so the outer catch below can
   // close it (isError: true) before yielding the error event. Without this,
@@ -91,7 +94,7 @@ export async function* runAgentTurn(params: {
   // span_start with no matching span_end — a dangling span in the trace.
   // Verified this actually happens: a real 401 arrives while llm_call's
   // span is open, not before it starts.
-  let openSpan: { spanId: string; spanType: SpanType; startedAt: number } | null = null;
+  let openSpan: { spanId: string; spanType: SpanType; startedAt: number; timeToFirstTokenMs?: number } | null = null;
 
   try {
     params.signal?.throwIfAborted();
@@ -106,6 +109,7 @@ export async function* runAgentTurn(params: {
       const abortStream = () => stream.abort();
       params.signal?.addEventListener("abort", abortStream, { once: true });
       let finalMessage;
+      let spanFirstTokenMs: number | undefined;
       try {
         if (params.signal?.aborted) abortStream();
         params.signal?.throwIfAborted();
@@ -126,6 +130,13 @@ export async function* runAgentTurn(params: {
             }
           }
           if (delta) {
+            if (spanFirstTokenMs === undefined) {
+              spanFirstTokenMs = Date.now() - llmSpanStart;
+              // Kept on the open span too, so a turn that fails mid-answer
+              // still records when its first token arrived.
+              if (openSpan) openSpan.timeToFirstTokenMs = spanFirstTokenMs;
+            }
+            if (firstTokenMs === null) firstTokenMs = Date.now() - startedAt;
             if (!emittedText && textSegments.length > 0) {
               yield { type: "text_delta", traceId, text: "\n\n" };
             } else if (pendingBlockSeparator) {
@@ -152,6 +163,7 @@ export async function* runAgentTurn(params: {
         spanType: "llm_call",
         durationMs: Date.now() - llmSpanStart,
         isError: false,
+        ...(spanFirstTokenMs !== undefined ? { timeToFirstTokenMs: spanFirstTokenMs } : {}),
         usage: {
           inputTokens: turnUsage.input_tokens ?? 0,
           outputTokens: turnUsage.output_tokens ?? 0,
@@ -263,6 +275,7 @@ export async function* runAgentTurn(params: {
         spanType: openSpan.spanType,
         durationMs: Date.now() - openSpan.startedAt,
         isError: true,
+        ...(openSpan.timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs: openSpan.timeToFirstTokenMs } : {}),
       };
     }
     yield {
@@ -336,6 +349,7 @@ export async function* runAgentTurn(params: {
     stopReason: finalStopReason,
     usage,
     totalDurationMs: Date.now() - startedAt,
+    timeToFirstTokenMs: firstTokenMs,
     iterations: iterationCount,
     repaired,
   };

@@ -39,6 +39,8 @@ SELECT
     CAST(raw_payload->>'$.cache_read_input_tokens' AS INTEGER) AS cache_read_input_tokens,
     CAST(raw_payload->>'$.cost_usd' AS DOUBLE) AS cost_usd,
     CAST(raw_payload->>'$.total_duration_ms' AS INTEGER) AS total_duration_ms,
+    -- NULL on traces written before first-token timing existed.
+    CAST(raw_payload->>'$.time_to_first_token_ms' AS INTEGER) AS time_to_first_token_ms,
     json_extract(raw_payload, '$.tool_calls') AS tool_calls_json,
     extracted_at,
     run_id
@@ -62,6 +64,7 @@ SELECT
     CAST(NULL AS INTEGER) AS cache_read_input_tokens,
     CAST(NULL AS DOUBLE) AS cost_usd,
     CAST(NULL AS INTEGER) AS total_duration_ms,
+    CAST(NULL AS INTEGER) AS time_to_first_token_ms,
     CAST(NULL AS JSON) AS tool_calls_json,
     CAST(NULL AS TIMESTAMP) AS extracted_at,
     CAST(NULL AS VARCHAR) AS run_id

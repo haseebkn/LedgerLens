@@ -51,6 +51,8 @@ export interface SpanEndEvent extends TraceMeta {
   spanType: SpanType;
   durationMs: number;
   isError: boolean;
+  /** llm_call spans that produced text: ms from the span's start to its first text delta. */
+  timeToFirstTokenMs?: number;
   /** Populated only on llm_call spans — this request's own usage, not cumulative. */
   usage?: {
     inputTokens: number;
@@ -107,6 +109,8 @@ export interface DoneEvent extends TraceMeta {
   stopReason: string;
   usage: UsageSummary;
   totalDurationMs: number;
+  /** ms from the start of the turn to the first model text; null if the model wrote none. */
+  timeToFirstTokenMs?: number | null;
   /** Number of LLM-call iterations in the tool-use loop (bounded by MAX_TOOL_ITERATIONS). */
   iterations: number;
   /** Whether the citation repair pass fired and changed the answer. */
