@@ -14,7 +14,8 @@ vi.mock("./lib/rows.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./lib/rows.js")>()),
   getRowById: mocks.getRowById,
 }));
-import { app } from "./index.js";
+import { app, createApp } from "./index.js";
+import { UsageLimiter } from "./lib/usage-limits.js";
 
 const done: AgentStreamEvent = {
   type: "done", traceId: "route-test", stopReason: "end_turn", iterations: 1,
@@ -163,5 +164,79 @@ describe("HTTP routes (no network or private warehouse required)", () => {
     const report = await app.request("/api/evals/latest");
     expect(await report.json()).toMatchObject({ runAt: "2026-09-04" });
     expect((await app.request("/api/traces/missing")).status).toBe(404);
+  });
+});
+
+describe("sign-in and limits (AUTH_MODE=cognito)", () => {
+  const verify = async (token: string) => {
+    if (!token.startsWith("valid-")) throw new Error("invalid token");
+    return { sub: token.slice("valid-".length) };
+  };
+  const limits = { turnsPerHour: 20, userTokensPerDay: 1_000_000, globalTokensPerDay: 10_000_000 };
+  const as = (user: string) => ({ Authorization: `Bearer valid-${user}` });
+  const post = (target: ReturnType<typeof createApp>, headers: Record<string, string> = {}) =>
+    target.request("/api/chat", {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ message: "hi" }),
+    });
+
+  it.each([
+    ["POST", "/api/chat"], ["GET", "/api/traces/abc"], ["GET", "/api/metrics"],
+    ["GET", "/api/rows/plaid_1"], ["GET", "/api/evals/latest"],
+  ])("rejects an unauthenticated %s %s with 401", async (method, path) => {
+    const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
+    const res = await secured.request(path, { method, headers: { "Content-Type": "application/json" }, body: method === "POST" ? "{}" : undefined });
+    expect(res.status).toBe(401);
+    expect(mocks.runAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it("leaves health, readiness and sign-in discovery public", async () => {
+    mocks.checkReadiness.mockResolvedValue({ ready: true, checks: { warehouse: "ok", retrieval: "ok" } });
+    const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
+    expect((await secured.request("/api/health")).status).toBe(200);
+    expect((await secured.request("/api/ready")).status).toBe(200);
+    expect(await (await secured.request("/api/auth/config")).json()).toEqual({ authRequired: true, demoAvailable: false });
+    expect((await secured.request("/api/auth/demo", { method: "POST" })).status).toBe(404);
+  });
+
+  it("answers a signed-in user and refuses the 21st turn in an hour with a clear 429", async () => {
+    const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
+    for (let i = 0; i < 20; i++) {
+      const res = await post(secured, as("alice"));
+      expect(res.status).toBe(200);
+      await res.text();
+    }
+    const limited = await post(secured, as("alice"));
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(await limited.json()).toMatchObject({ reason: "turns_per_hour", error: expect.stringContaining("20 questions") });
+    // Another user's limit is separate.
+    expect((await post(secured, as("bob"))).status).toBe(200);
+  });
+
+  it("charges the tokens a turn used against the user's daily budget", async () => {
+    const limiter = new UsageLimiter({ ...limits, userTokensPerDay: 15 });
+    const secured = createApp({ authMode: "cognito", verify, limiter });
+    await (await post(secured, as("carol"))).text();
+    const refused = await post(secured, as("carol"));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ reason: "user_tokens_per_day" });
+  });
+
+  it("signs in the demo user server-side without exposing its password", async () => {
+    const demoSignIn = vi.fn(async () => ({ accessToken: "valid-demo", expiresIn: 3600 }));
+    const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits), demoSignIn });
+    expect(await (await secured.request("/api/auth/config")).json()).toMatchObject({ demoAvailable: true });
+    const res = await secured.request("/api/auth/demo", { method: "POST" });
+    expect(await res.json()).toEqual({ accessToken: "valid-demo", expiresIn: 3600 });
+    demoSignIn.mockRejectedValueOnce(new Error("NotAuthorizedException for demo/hunter2"));
+    const failed = await secured.request("/api/auth/demo", { method: "POST" });
+    expect(failed.status).toBe(503);
+    expect(await failed.text()).not.toContain("hunter2");
+  });
+
+  it("sets security headers on API responses", async () => {
+    const res = await app.request("/api/health");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
   });
 });

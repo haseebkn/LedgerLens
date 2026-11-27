@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatDurationMs, formatToolName, formatUsd } from "../lib/format.js";
+import { apiFetch, errorMessage } from "../lib/api.js";
 
 interface AggregateMetrics {
   turns: number;
@@ -29,9 +30,9 @@ export function MetricsView() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/metrics")
-      .then((r) => {
-        if (!r.ok) throw new Error(`${r.status}`);
+    apiFetch("/api/metrics")
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await errorMessage(r, `${r.status}`));
         return r.json();
       })
       .then(setMetrics)

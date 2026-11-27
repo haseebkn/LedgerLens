@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ChatView } from "./components/ChatView.js";
 import { MetricsView } from "./components/MetricsView.js";
 import { EvalsView } from "./components/EvalsView.js";
+import { SignIn } from "./components/SignIn.js";
+import { fetchAuthConfig, getSession, onSessionChange, setSession, type AuthConfig } from "./lib/api.js";
 import "./App.css";
 
 type Tab = "chat" | "metrics" | "evals";
@@ -12,7 +14,26 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "evals", label: "Evals" },
 ];
 
+function useSignedIn(): boolean {
+  return useSyncExternalStore(onSessionChange, () => getSession() !== null, () => false);
+}
+
 export default function App() {
+  const [config, setConfig] = useState<AuthConfig | null>(null);
+  const signedIn = useSignedIn();
+
+  useEffect(() => {
+    let live = true;
+    void fetchAuthConfig().then((c) => live && setConfig(c));
+    return () => { live = false; };
+  }, []);
+
+  if (!config) return <p className="empty-state" role="status">Loading…</p>;
+  if (config.authRequired && !signedIn) return <SignIn demoAvailable={config.demoAvailable} />;
+  return <Workspace canSignOut={config.authRequired} />;
+}
+
+function Workspace({ canSignOut }: { canSignOut: boolean }) {
   const [tab, setTab] = useState<Tab>("chat");
 
   return (
@@ -49,6 +70,11 @@ export default function App() {
             </button>
           ))}
         </nav>
+        {canSignOut && (
+          <button type="button" className="link-button" onClick={() => setSession(null)}>
+            Sign out
+          </button>
+        )}
       </header>
 
       <main className="app-main">

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch, errorMessage } from "../lib/api.js";
 import { formatDurationMs, formatUsd } from "../lib/format.js";
 
 interface CategoryStats {
@@ -52,13 +53,13 @@ export function EvalsView() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/evals/latest")
+    apiFetch("/api/evals/latest")
       .then(async (r) => {
         if (r.status === 404) {
           setNotFound(true);
           return;
         }
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok) throw new Error(await errorMessage(r, `${r.status}`));
         setReport(await r.json());
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
