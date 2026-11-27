@@ -8,7 +8,7 @@ Deploys the three containers built by [`agent/Dockerfile`](../../agent/Dockerfil
 Internet
    │
    ▼
-ALB (port 80)
+ALB (HTTPS 443 with ACM certificate; port 80 redirects; WAF rate limits)
    ├── /api/*  ──▶  agent Fargate service (port 8787) ──▶  retrieval Fargate service (port 8100, internal-only via Cloud Map)
    └── /*      ──▶  web Fargate service (nginx, port 80)
 
@@ -19,7 +19,8 @@ agent + retrieval both mount an EFS access point:
 
 - **No NAT gateway.** Fargate tasks run in public subnets with public IPs and security-group-restricted ingress, saving the ~$32/mo a NAT gateway would cost. This is a reasonable trade for a single-service portfolio deploy — not a pattern to copy for a workload handling real financial data.
 - **No RDS.** The warehouse is a DuckDB file on EFS, matching how it already runs locally — one writer (dbt/the extractors, run out-of-band, not deployed here), many readers (the agent's tools).
-- **No HTTPS by default.** The ALB listens on port 80 only. Point a domain at `alb_dns_name`, request an ACM certificate, and add a port-443 listener before this serves anything beyond a demo.
+- **HTTPS only.** The ALB serves `domain_name` with an ACM certificate (TLS 1.2+); port 80 returns a 301 to HTTPS. A WAF on the ALB limits requests per IP, with a tighter limit on the demo sign-in.
+- **Sign-in in the app.** The agent verifies Cognito access tokens on every `/api/*` route except health, readiness and sign-in discovery, and enforces per-user turn and token limits (`agent/src/lib/auth.ts`, `agent/src/lib/usage-limits.ts`).
 
 ## What's deployed vs. what isn't
 
@@ -27,7 +28,7 @@ Terraform here provisions the **serving path**: the agent's chat API, the retrie
 
 Agent traces are written to `/data/raw_data/agent_traces` on the warehouse EFS access point so task replacement does not discard them. An out-of-band dbt build must ingest those files before Metrics reflects new traffic. Public evaluation reports ship in the agent image; private and partial reports are excluded from the Docker build context.
 
-The HTTP API has no user authentication or monthly usage cap. Before exposing it publicly, use reviewed synthetic data, add access control and TLS, and enforce an API spending policy. Local container checks and Terraform validation do not establish that this stack has operated successfully on AWS.
+Spend controls, from inside out: a per-turn token budget in the agent loop; per-user limits (default 20 turns per hour and 300k tokens per day); a global 3M tokens per day; the WAF's per-IP limits; and a monthly spend limit you set on the Anthropic workspace that owns the key (Console → Settings → Limits). Set that last one before sharing the URL: it is the only one that holds if everything else is misconfigured. Terraform validation in CI does not establish that this stack has run on AWS.
 
 ## Setup
 
@@ -40,6 +41,23 @@ terraform apply
 ```
 
 Requires AWS credentials in the environment (`aws configure`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with permissions to create VPC, ECS, ECR, EFS, ALB, IAM, Secrets Manager, Cloud Map, and CloudWatch Logs resources.
+
+## Domain, sign-in and the demo account
+
+1. **Domain.** Set `domain_name`. If its DNS is a Route 53 hosted zone, also set `route53_zone_id` and Terraform creates the certificate validation and alias records. Otherwise `terraform apply` waits on the certificate: add the record from the `certificate_validation_records` output at your DNS provider, and afterwards point `domain_name` at `alb_dns_name`.
+2. **Secrets.** Terraform creates the demo-password secret without a value, so the password never enters state. Set it, and create the matching Cognito user, before the first deploy (an ECS task can't start with an empty secret):
+
+```bash
+POOL=$(terraform output -raw cognito_user_pool_id)
+DEMO_PASSWORD='<at least 14 characters, upper and lower case and a number>'
+aws cognito-idp admin-create-user --user-pool-id "$POOL" --username demo --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id "$POOL" --username demo --password "$DEMO_PASSWORD" --permanent
+aws secretsmanager put-secret-value --secret-id financial-context/demo-password --secret-string "$DEMO_PASSWORD"
+```
+
+3. **Spend limit.** Set a monthly limit on the Anthropic workspace that owns the API key.
+
+Other accounts are created the same way (`admin-create-user`); there is no self sign-up, and the web app currently offers only "Try the demo".
 
 ## Building and pushing images
 

@@ -81,3 +81,50 @@ variable "web_memory" {
   type        = number
   default     = 512
 }
+
+variable "domain_name" {
+  description = "Hostname the app is served on, e.g. ledgerlens.example.com. Required: the ALB serves HTTPS only, with an ACM certificate for this name."
+  type        = string
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone that contains domain_name. When set, Terraform creates the certificate's validation record and the alias record. Leave empty to add both DNS records yourself (see README)."
+  type        = string
+  default     = ""
+}
+
+variable "demo_username" {
+  description = "Cognito username of the shared \"Try the demo\" account. Create the user and set its password outside Terraform (see README), so the password never enters state."
+  type        = string
+  default     = "demo"
+}
+
+variable "waf_requests_per_5_minutes" {
+  description = "Per-IP request limit across the whole site, per 5-minute window, enforced by the ALB's WAF."
+  type        = number
+  default     = 600
+}
+
+variable "waf_demo_signins_per_5_minutes" {
+  description = "Per-IP limit on POST /api/auth/demo, per 5-minute window."
+  type        = number
+  default     = 20
+}
+
+variable "turns_per_hour" {
+  description = "Chat turns each signed-in user may start per rolling hour."
+  type        = number
+  default     = 20
+}
+
+variable "user_tokens_per_day" {
+  description = "Model tokens (input, output and cache) each user may use per UTC day."
+  type        = number
+  default     = 300000
+}
+
+variable "global_tokens_per_day" {
+  description = "Model tokens all users together may use per UTC day. Also set a monthly spend limit on the Anthropic workspace that owns the API key."
+  type        = number
+  default     = 3000000
+}

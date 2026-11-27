@@ -15,5 +15,6 @@ RUN npm run build --workspace web
 
 FROM nginx:1.27-alpine AS runtime
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /repo/web/dist /usr/share/nginx/html
 EXPOSE 80

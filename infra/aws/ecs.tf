@@ -114,10 +114,18 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "DUCKDB_PATH", value = "/data/financial_engine.db" },
       { name = "RAW_DATA_ROOT", value = "/data/raw_data" },
       { name = "RETRIEVAL_SERVICE_URL", value = "http://retrieval.internal:8100" },
+      { name = "AUTH_MODE", value = "cognito" },
+      { name = "COGNITO_USER_POOL_ID", value = aws_cognito_user_pool.main.id },
+      { name = "COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.web.id },
+      { name = "DEMO_USERNAME", value = var.demo_username },
+      { name = "TURNS_PER_HOUR", value = tostring(var.turns_per_hour) },
+      { name = "USER_TOKENS_PER_DAY", value = tostring(var.user_tokens_per_day) },
+      { name = "GLOBAL_TOKENS_PER_DAY", value = tostring(var.global_tokens_per_day) },
     ]
     secrets = [
       { name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic_api_key.arn },
       { name = "RETRIEVAL_SERVICE_TOKEN", valueFrom = aws_secretsmanager_secret.retrieval_service_token.arn },
+      { name = "DEMO_PASSWORD", valueFrom = aws_secretsmanager_secret.demo_password.arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -149,7 +157,7 @@ resource "aws_ecs_service" "agent" {
     container_port   = 8787
   }
 
-  depends_on = [aws_lb_listener.http, aws_ecs_service.retrieval]
+  depends_on = [aws_lb_listener_rule.api, aws_ecs_service.retrieval]
 }
 
 # --- web frontend (behind ALB, default route) ---------------------------
@@ -200,5 +208,5 @@ resource "aws_ecs_service" "web" {
     container_port   = 80
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.https]
 }

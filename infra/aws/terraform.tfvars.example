@@ -2,6 +2,12 @@ aws_region   = "us-east-1"
 project_name = "financial-context"
 environment  = "prod"
 
+# Required: the app is served over HTTPS on this name.
+domain_name = "ledgerlens.example.com"
+# Optional: the Route 53 hosted zone for domain_name. Leave empty to add the
+# DNS records yourself (see README).
+route53_zone_id = ""
+
 # Secrets — do not commit a real terraform.tfvars with these filled in.
 # Prefer TF_VAR_anthropic_api_key / TF_VAR_retrieval_service_token env vars,
 # or a secrets-manager-backed CI runner, over a plaintext tfvars file.
