@@ -13,6 +13,7 @@ interface EvalReport {
   runAt: string;
   model: string;
   totalCases: number;
+  metadata?: { latencyScope: "agent_only"; costScope: "agent_only"; judgeN: number };
   categoryBreakdown: Record<string, CategoryStats>;
   aggregate: {
     toolChoiceAccuracy: number;
@@ -34,6 +35,7 @@ interface EvalReport {
     judgeSpread: number;
     judgeExplanation: string;
     errored: boolean;
+    citationsValid?: boolean;
     manualAdjudication?: {
       verdict: "judge_false_negative";
       score: number;
@@ -74,24 +76,27 @@ export function EvalsView() {
   if (!report) return <p className="empty-state">Loading eval report…</p>;
 
   const failing = report.results.filter(
-    (r) => r.errored || r.toolChoiceScore < 1 || r.recallScore < 1 || r.judgeScore < 4
+    (r) => r.errored || r.toolChoiceScore < 1 || r.recallScore < 1 || r.judgeScore < 4 || r.citationsValid === false
   );
 
   return (
     <div className="metrics-view">
       <p className="eval-meta">
         {report.model} · {report.totalCases} cases · {new Date(report.runAt).toLocaleString()} ·{" "}
-        {formatUsd(report.aggregate.totalCostUsd)}
+        Agent cost {formatUsd(report.aggregate.totalCostUsd)} (judge excluded)
       </p>
+      {!report.metadata && (
+        <p className="stat-sub">Historical report: latency includes both the agent turn and judge evaluation.</p>
+      )}
 
       <div className="stat-grid">
         <div className="stat-card">
           <div className="stat-label">Tool-choice accuracy</div>
-          <div className="stat-value">{(report.aggregate.toolChoiceAccuracy * 100).toFixed(0)}%</div>
+          <div className="stat-value">{(report.aggregate.toolChoiceAccuracy * 100).toFixed(1)}%</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Mean recall</div>
-          <div className="stat-value">{(report.aggregate.meanRecall * 100).toFixed(0)}%</div>
+          <div className="stat-value">{(report.aggregate.meanRecall * 100).toFixed(1)}%</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Mean judge score</div>
@@ -104,7 +109,7 @@ export function EvalsView() {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">p50 / p95</div>
+          <div className="stat-label">{report.metadata?.latencyScope === "agent_only" ? "Agent" : "Agent + judge"} p50 / p95</div>
           <div className="stat-value">
             {formatDurationMs(report.aggregate.p50DurationMs)} / {formatDurationMs(report.aggregate.p95DurationMs)}
           </div>
@@ -129,8 +134,8 @@ export function EvalsView() {
               <tr key={category}>
                 <td>{category}</td>
                 <td>{stats.count}</td>
-                <td>{(stats.toolChoiceAccuracy * 100).toFixed(0)}%</td>
-                <td>{(stats.meanRecall * 100).toFixed(0)}%</td>
+                <td>{(stats.toolChoiceAccuracy * 100).toFixed(1)}%</td>
+                <td>{(stats.meanRecall * 100).toFixed(1)}%</td>
                 <td>{stats.meanJudgeScore.toFixed(2)}</td>
                 <td>{stats.meanJudgeSpread.toFixed(2)}</td>
               </tr>
@@ -152,6 +157,7 @@ export function EvalsView() {
                   </span>
                 </div>
                 <p className="eval-failure-question">{r.question}</p>
+                {r.citationsValid === false && <p className="eval-failure-explanation">Citation check flagged a problem.</p>}
                 {r.judgeExplanation && <p className="eval-failure-explanation">{r.judgeExplanation}</p>}
                 {r.manualAdjudication && (
                   <div className="eval-adjudication">

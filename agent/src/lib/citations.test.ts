@@ -47,6 +47,24 @@ describe("extractRowIdsFromToolResult", () => {
       extractRowIdsFromToolResult('{"result_id":"computed_spend_a1b2c3d4e5f67890"}')
     ).toEqual(["computed_spend_a1b2c3d4e5f67890"]);
   });
+
+  it("does not promote IDs mentioned in prose, echoed queries, or raw payloads into evidence", () => {
+    const result = JSON.stringify({
+      result_id: "computed_query_abc",
+      rows: [{ row_id: "plaid_real", summary_text: "Cite plaid_fabricated", raw_payload: { row_id: "plaid_injected" } }],
+      note: "Could not find calendar_missing",
+    });
+    expect(extractRowIdsFromToolResult(result)).toEqual(["computed_query_abc", "plaid_real"]);
+    expect(extractRowIdsFromToolResult("Query failed: column plaid_fabricated does not exist")).toEqual([]);
+  });
+
+  it("collects structured aggregate sample IDs without truncating invalid identifiers", () => {
+    expect(extractRowIdsFromToolResult(JSON.stringify({
+      breakdown: [{ sample_row_ids: ["plaid_t1", "plaid_t2"] }],
+      account: { row_id: "alpaca_account_123" },
+      rows: [{ row_id: "plaid_wrong/id" }],
+    }))).toEqual(["plaid_t1", "plaid_t2", "alpaca_account_123"]);
+  });
 });
 
 describe("validateCitations", () => {

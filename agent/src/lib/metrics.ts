@@ -26,7 +26,7 @@ export async function getMetrics(): Promise<AggregateMetrics> {
         COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_duration_ms), 0) AS p95_duration_ms,
         COALESCE(
           SUM(cache_read_input_tokens)::DOUBLE
-            / NULLIF(SUM(cache_read_input_tokens + input_tokens), 0),
+            / NULLIF(SUM(cache_read_input_tokens + cache_creation_input_tokens + input_tokens), 0),
           0
         ) AS cache_hit_rate
       FROM main_analytics.fct_agent_traces

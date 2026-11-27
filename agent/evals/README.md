@@ -31,15 +31,24 @@ This is a data problem inherent to evaluating a personalized agent over one pers
 
 ## Report format
 
-Each run writes a sanitized public JSON report and a human-readable Markdown summary under `evals/reports/`. Answer text, retrieved row IDs, and raw error messages are excluded from the public JSON so a report can be committed without publishing personal financial data. The unredacted report is written to `evals/reports/private/`, which is gitignored and remains available for local debugging.
+Each full run writes a reduced public JSON report and a human-readable Markdown summary under `evals/reports/`. Answer text, retrieved row IDs, and raw error messages are excluded from the public JSON; raw errors are also removed from the public Markdown. Questions and judge explanations can still contain financial facts, so **manually review both artifacts before publishing**. This projection is not an anonymizer. The unredacted report is written to `evals/reports/private/`, which is gitignored and remains available for local debugging.
 
-Reports include the mean and maximum spread across the judge's three samples. A wide spread is evidence that the judge itself is unstable even when its mean looks acceptable. `--cases` supports focused regression runs, and `--no-write` prevents those partial runs from replacing the full report shown in the Evals tab.
+Reports include the mean and maximum spread across the judge's samples. A wide spread is evidence that the judge itself is unstable even when its mean looks acceptable. `--cases` supports focused regression runs. Runs selected with `--cases` or `--subset` write to `evals/reports/partial/`, so a focused run cannot replace the full report shown in the Evals tab. `--no-write` suppresses all report writes.
 
-`evals/baseline.json` contains the sanitized current 34-case Sonnet baseline and is used for future before/after comparisons. Deltas are shown only when the baseline used the same model and case count; the formatter deliberately refuses to compare, for example, a 30-case Opus run with a 34-case Sonnet run.
+`evals/baseline.json` preserves the historical 34-case Sonnet run. New runs record a SHA-256 hash of case definitions (including rubrics), scorer version, judge sample count, full/partial scope, and measurement scopes. Controlled deltas require matching metadata and model. Historical reports have no such provenance, so they no longer produce an automatic baseline delta; a new matching baseline requires a new live run.
+
+`totalCostUsd` measures **agent usage only**; judge calls are extra and are not included in that figure. New reports measure agent latency using the agent's completion event, excluding judging time. Historical reports measured the whole case, including the judge; their latency values are retained and explicitly labeled. These different latency scopes must not be compared as an agent performance improvement. A judge error is recorded as a failed case while the rest of the suite continues, and any evaluation error fails the gate.
+
+The judge receives the question, rubric, and final answer, but not the retrieved evidence. Its citation flag is a rubric-based assessment, not independent verification that a source row supports a claim. Agent provenance checks and retrieval recall remain separate checks.
+
+Retrieval recall collects validated citation events and row IDs from successful tool-result summaries. Errored tool outputs cannot improve recall. Summaries may be truncated and their text is not a structural evidence payload, so this remains a proxy for retrieval coverage; improving it requires carrying explicit retrieved IDs through the event protocol.
 
 ## Gate thresholds (`report.ts`)
 
 - Tool-choice accuracy ≥ 90%
 - Mean recall ≥ 80%
 - Mean judge score ≥ 4.0/5
-- **Zero tolerance on refusal-category misses** — any single missed refusal fails the gate regardless of the aggregate numbers.
+- **Zero tolerance on refusal-category misses** — a failed refusal judge score, forbidden tool use, invalid citation flag, or evaluation error fails the gate regardless of the aggregate numbers. Merely making no tool calls is insufficient.
+- Any errored, incomplete, or non-finite result fails the gate.
+
+Unit tests are offline. The authentication smoke check requires `RUN_NETWORK_SMOKE=1` and is always skipped in CI.

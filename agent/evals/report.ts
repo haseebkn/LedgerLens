@@ -1,4 +1,5 @@
-import type { CaseResult, EvalReport, GoldenCase } from "./types.js";
+import { createHash } from "node:crypto";
+import type { CaseResult, EvalReport, EvalRunMetadata, GoldenCase } from "./types.js";
 
 const CATEGORIES: GoldenCase["category"][] = ["retrieval", "aggregation", "multihop", "refusal", "nodata"];
 
@@ -12,7 +13,11 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx]!;
 }
 
-export function buildReport(results: CaseResult[], model: string): EvalReport {
+export function hashGoldenSet(cases: GoldenCase[]): string {
+  return createHash("sha256").update(JSON.stringify([...cases].sort((a, b) => a.id.localeCompare(b.id)))).digest("hex");
+}
+
+export function buildReport(results: CaseResult[], model: string, metadata?: EvalRunMetadata): EvalReport {
   const categoryBreakdown = {} as EvalReport["categoryBreakdown"];
   for (const category of CATEGORIES) {
     const inCategory = results.filter((r) => r.category === category);
@@ -31,6 +36,7 @@ export function buildReport(results: CaseResult[], model: string): EvalReport {
     runAt: new Date().toISOString(),
     model,
     totalCases: results.length,
+    ...(metadata ? { metadata } : {}),
     categoryBreakdown,
     aggregate: {
       toolChoiceAccuracy: mean(results.map((r) => r.toolChoiceScore)),
@@ -67,6 +73,15 @@ export interface GateResult {
 export function evaluateGate(report: EvalReport, thresholds: GateThresholds = DEFAULT_THRESHOLDS): GateResult {
   const failures: string[] = [];
 
+  if (report.results.length === 0 || report.totalCases !== report.results.length) {
+    failures.push("Eval report is empty or incomplete.");
+  }
+  const errored = report.results.filter((result) => result.errored);
+  if (errored.length > 0) failures.push(`Evaluation errors: ${errored.map((result) => result.id).join(", ")}`);
+  if ([report.aggregate.toolChoiceAccuracy, report.aggregate.meanRecall, report.aggregate.meanJudgeScore].some((score) => !Number.isFinite(score))) {
+    failures.push("Evaluation contains non-finite scores.");
+  }
+
   if (report.aggregate.toolChoiceAccuracy < thresholds.minToolChoiceAccuracy) {
     failures.push(
       `Tool-choice accuracy ${report.aggregate.toolChoiceAccuracy.toFixed(2)} < ${thresholds.minToolChoiceAccuracy}`
@@ -79,7 +94,9 @@ export function evaluateGate(report: EvalReport, thresholds: GateThresholds = DE
     failures.push(`Mean judge score ${report.aggregate.meanJudgeScore.toFixed(2)} < ${thresholds.minJudgeScore}`);
   }
 
-  const refusalFailures = report.results.filter((r) => r.category === "refusal" && r.toolChoiceScore < 1);
+  const refusalFailures = report.results.filter((r) => r.category === "refusal" && (
+    r.errored || r.toolChoiceScore < 1 || r.judgeScore < thresholds.minJudgeScore || !r.citationsValid
+  ));
   if (refusalFailures.length > 0) {
     failures.push(
       `${refusalFailures.length} refusal case(s) failed (zero tolerance): ${refusalFailures.map((r) => r.id).join(", ")}`
@@ -97,14 +114,20 @@ export function formatReportMarkdown(report: EvalReport, baseline?: EvalReport):
   const lines: string[] = [];
   lines.push(`# Eval Report — ${report.runAt}`);
   lines.push("");
-  lines.push(`Model: \`${report.model}\` | Cases: ${report.totalCases} | Cost: $${report.aggregate.totalCostUsd.toFixed(4)}`);
+  lines.push(`Model: \`${report.model}\` | Cases: ${report.totalCases} | Agent cost (judge excluded): $${report.aggregate.totalCostUsd.toFixed(4)}`);
   lines.push("");
 
-  // A delta is meaningful only when both reports exercised the same model
-  // and the same number of cases. Comparing a 34-case Sonnet run with the
-  // old 30-case Opus baseline produced a precise-looking but invalid number.
+  // A matching count cannot establish matching questions or scoring rules.
+  // Legacy reports lack this provenance and cannot support a controlled delta.
   const comparableBaseline =
-    baseline?.model === report.model && baseline.totalCases === report.totalCases ? baseline : undefined;
+    baseline?.metadata && report.metadata && baseline.model === report.model &&
+    baseline.totalCases === report.totalCases &&
+    baseline.metadata.goldenSetHash === report.metadata.goldenSetHash &&
+    baseline.metadata.scorerVersion === report.metadata.scorerVersion &&
+    baseline.metadata.judgeN === report.metadata.judgeN &&
+    baseline.metadata.scope === report.metadata.scope &&
+    baseline.metadata.latencyScope === report.metadata.latencyScope &&
+    baseline.metadata.costScope === report.metadata.costScope ? baseline : undefined;
 
   const diff = (current: number, baselineValue: number | undefined, fmt: (n: number) => string) => {
     if (baselineValue === undefined) return "";
@@ -120,7 +143,8 @@ export function formatReportMarkdown(report: EvalReport, baseline?: EvalReport):
   lines.push(`- Mean recall: ${fmtPct(report.aggregate.meanRecall)}${diff(report.aggregate.meanRecall, comparableBaseline?.aggregate.meanRecall, fmtPct)}`);
   lines.push(`- Mean judge score: ${report.aggregate.meanJudgeScore.toFixed(2)}/5${diff(report.aggregate.meanJudgeScore, comparableBaseline?.aggregate.meanJudgeScore, (n) => n.toFixed(2))}`);
   lines.push(`- Judge spread, mean / max: ${report.aggregate.meanJudgeSpread.toFixed(2)} / ${report.aggregate.maxJudgeSpread.toFixed(2)}`);
-  lines.push(`- p50 / p95 latency: ${report.aggregate.p50DurationMs}ms / ${report.aggregate.p95DurationMs}ms`);
+  const latencyLabel = report.metadata?.latencyScope === "agent_only" ? "Agent" : "Legacy agent + judge";
+  lines.push(`- ${latencyLabel} p50 / p95 latency: ${report.aggregate.p50DurationMs}ms / ${report.aggregate.p95DurationMs}ms`);
   lines.push("");
 
   lines.push("## By category");
@@ -134,7 +158,7 @@ export function formatReportMarkdown(report: EvalReport, baseline?: EvalReport):
   }
   lines.push("");
 
-  const failing = report.results.filter((r) => r.errored || r.toolChoiceScore < 1 || r.recallScore < 1 || r.judgeScore < 4);
+  const failing = report.results.filter((r) => r.errored || r.toolChoiceScore < 1 || r.recallScore < 1 || r.judgeScore < 4 || !r.citationsValid);
   if (failing.length > 0) {
     lines.push("## Failing / low-scoring cases");
     lines.push("");

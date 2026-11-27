@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { bodyLimit } from "hono/body-limit";
 import { serve } from "@hono/node-server";
 import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
@@ -42,16 +43,25 @@ app.get("/api/traces/:id", async (c) => {
 });
 
 const ChatRequestSchema = z.object({
-  message: z.string().min(1),
+  message: z.string().trim().min(1).max(8000),
   history: z
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string(),
+        content: z.string().min(1).max(8000),
       })
     )
+    .max(40)
     .default([]),
-});
+}).refine(
+  ({ message, history }) => message.length + history.reduce((sum, item) => sum + item.content.length, 0) <= 64000,
+  { message: "Conversation exceeds the 64000-character context limit" },
+);
+
+app.use("/api/chat", bodyLimit({
+  maxSize: 128 * 1024,
+  onError: (c) => c.json({ error: "Request body exceeds 128 KiB" }, 413),
+}));
 
 app.post("/api/chat", async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -67,13 +77,26 @@ app.post("/api/chat", async (c) => {
 
   return streamSSE(c, async (stream) => {
     const events: AgentStreamEvent[] = [];
+    const controller = new AbortController();
+    stream.onAbort(() => controller.abort());
     try {
-      for await (const event of runAgentTurn({ history, userMessage: parsed.data.message })) {
+      for await (const event of runAgentTurn({ history, userMessage: parsed.data.message, signal: controller.signal })) {
         events.push(event);
-        await stream.write(toSseFrame(event));
+        if (!stream.aborted) await stream.write(toSseFrame(event));
         if (event.type === "done" || (event.type === "error" && event.fatal)) break;
       }
+    } catch (e) {
+      console.error("Agent response failed:", e);
+      const event: AgentStreamEvent = {
+        type: "error", traceId: events[0]?.traceId ?? "unknown", fatal: true,
+        message: "The response was interrupted. Please try again.",
+      };
+      events.push(event);
+      if (!stream.aborted) await stream.write(toSseFrame(event));
     } finally {
+      if (controller.signal.aborted && !events.some((event) => event.type === "done" || (event.type === "error" && event.fatal))) {
+        events.push({ type: "error", traceId: events[0]?.traceId ?? "unknown", fatal: true, message: "Client disconnected" });
+      }
       // Trace persistence is best-effort: a disk/permissions failure here
       // must never take down the response the user already received.
       try {
@@ -82,7 +105,7 @@ app.post("/api/chat", async (c) => {
         // eslint-disable-next-line no-console
         console.error("Failed to persist trace record:", e);
       }
-      await stream.close();
+      if (!stream.aborted) await stream.close();
     }
   });
 });
@@ -94,7 +117,7 @@ app.post("/api/chat", async (c) => {
 // (backslash vs forward-slash path separators, drive-letter casing).
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  serve({ fetch: app.fetch, port: env.PORT }, (info) => {
+  serve({ fetch: app.fetch, hostname: env.HOST, port: env.PORT }, (info) => {
     // eslint-disable-next-line no-console
     console.log(`Agent service listening on http://localhost:${info.port}`);
   });

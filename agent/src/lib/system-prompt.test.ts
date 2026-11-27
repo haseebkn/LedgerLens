@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { SYSTEM_PROMPT } from "./system-prompt.js";
 
 describe("SYSTEM_PROMPT live-regression rules", () => {
+  it("uses deterministic calendar rendering and preserves date-only all-day semantics", () => {
+    expect(SYSTEM_PROMPT).toContain("Use the deterministic calendar_time");
+    expect(SYSTEM_PROMPT).toContain("Preserve the timezone label");
+    expect(SYSTEM_PROMPT).toContain("Their end date is exclusive");
+    expect(SYSTEM_PROMPT).toContain("say the timezone cannot be determined");
+  });
   it("does not let data coverage redefine a relative period", () => {
     expect(SYSTEM_PROMPT).toContain('Never redefine "last month" or "next week"');
   });

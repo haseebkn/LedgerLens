@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { SseFrameParser } from "./sse.js";
+import { describe, expect, it, vi } from "vitest";
+import { SseFrameParser, streamAgentEvents } from "./sse.js";
 
 function frame(obj: unknown): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
@@ -74,5 +74,27 @@ describe("SseFrameParser", () => {
     const parser = new SseFrameParser();
     expect(parser.push("data: {\"type\":")).toEqual([]);
     expect(parser.push('"text_delta","traceId":"t1","text":"z"}\n\n')).toHaveLength(1);
+  });
+
+  it("parses CRLF delimiters split across chunks and joins multiple data lines", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push('data: {"type":"text_delta",\r\ndata: "traceId":"t1","text":"hi"}\r')).toEqual([]);
+    expect(parser.push("\n\r")).toEqual([]);
+    expect(parser.push("\n")).toEqual([{ type: "text_delta", traceId: "t1", text: "hi" }]);
+  });
+});
+
+describe("streamAgentEvents", () => {
+  it("cancels its reader when the consumer stops after a terminal event", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame({ type: "text_delta", traceId: "t1", text: "hi" })));
+      },
+      cancel,
+    });
+    for await (const _event of streamAgentEvents(new Response(body))) break;
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
   });
 });

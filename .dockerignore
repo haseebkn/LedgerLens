@@ -16,3 +16,13 @@ token.json
 logs
 target
 **/*.log
+**/.test-*
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.demo
+agent/evals/reports/private
+agent/evals/reports/partial
+infra/**/*.tfstate*
+infra/**/terraform.tfvars
+infra/**/.terraform

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     google_application_credentials: str = "credentials.json"
     google_token_path: str = "token.json"
     google_calendar_id: str = "primary"
+    google_oauth_interactive: bool = True
 
     # AWS S3
     aws_access_key_id: str | None = None

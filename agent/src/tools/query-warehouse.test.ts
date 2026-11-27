@@ -18,25 +18,20 @@ describe("query_warehouse tool (integration, real warehouse)", () => {
   });
 
   it("rejects a disallowed table with a clear reason fed back to the model", async () => {
-    const result = await queryWarehouseTool.run({ sql: "SELECT * FROM main_analytics.nonexistent_table" });
-    expect(result).toMatch(/Query rejected/);
-    expect(result).toMatch(/not in the allowed set/);
+    await expect(queryWarehouseTool.run({ sql: "SELECT * FROM main_analytics.nonexistent_table" }))
+      .rejects.toThrow(/Query rejected:.*not in the allowed set/);
   });
 
   it("rejects a write statement", async () => {
-    const result = await queryWarehouseTool.run({
+    await expect(queryWarehouseTool.run({
       sql: "DELETE FROM main_analytics.fct_context_rows",
-    });
-    expect(result).toMatch(/Query rejected/);
-    expect(result).toMatch(/Only SELECT queries/);
+    })).rejects.toThrow(/Query rejected:.*Only SELECT queries/);
   });
 
   it("rejects a path-traversal attempt via a table function", async () => {
-    const result = await queryWarehouseTool.run({
+    await expect(queryWarehouseTool.run({
       sql: "SELECT * FROM read_text('../README.md')",
-    });
-    expect(result).toMatch(/Query rejected/);
-    expect(result).toMatch(/disallowed function/);
+    })).rejects.toThrow(/Query rejected:.*disallowed function/);
   });
 
   it("returns citable computed provenance for a zero-row result", async () => {
@@ -50,9 +45,8 @@ describe("query_warehouse tool (integration, real warehouse)", () => {
   });
 
   it("surfaces a real DuckDB execution error usefully (bad column name)", async () => {
-    const result = await queryWarehouseTool.run({
+    await expect(queryWarehouseTool.run({
       sql: "SELECT this_column_does_not_exist FROM main_analytics.fct_context_rows",
-    });
-    expect(result).toMatch(/Query failed to execute/);
+    })).rejects.toThrow(/Query failed to execute/);
   });
 });

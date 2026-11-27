@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentStreamEvent, UsageSummary } from "financial-context-agent/streaming-types";
 import { streamAgentEvents } from "../lib/sse.js";
 
@@ -35,14 +35,41 @@ export interface ChatMessage {
 
 export type StreamFn = (
   message: string,
-  history: { role: "user" | "assistant"; content: string }[]
+  history: { role: "user" | "assistant"; content: string }[],
+  signal?: AbortSignal
 ) => AsyncGenerator<AgentStreamEvent>;
 
-const defaultStreamFn: StreamFn = async function* (message, history) {
+export const MAX_MESSAGE_CHARS = 8000;
+const MAX_HISTORY_ENTRIES = 40;
+const MAX_CONTEXT_CHARS = 64000;
+
+/** Keep recent, complete turns; a failed or partial answer must not become trusted history. */
+export function buildChatHistory(messages: ChatMessage[], userText: string) {
+  const history: { role: "user" | "assistant"; content: string }[] = [];
+  let chars = userText.length;
+  for (let i = messages.length - 1; i > 0; i -= 2) {
+    const answer = messages[i]!;
+    const question = messages[i - 1]!;
+    if (question.role !== "user" || answer.role !== "assistant" || answer.status !== "done") continue;
+    if (!answer.content.trim() || answer.content.length > MAX_MESSAGE_CHARS) continue;
+    if (question.content.length > MAX_MESSAGE_CHARS) continue;
+    const pairChars = question.content.length + answer.content.length;
+    if (history.length + 2 > MAX_HISTORY_ENTRIES || chars + pairChars > MAX_CONTEXT_CHARS) break;
+    history.unshift({ role: "user", content: question.content }, { role: "assistant", content: answer.content });
+    chars += pairChars;
+  }
+  while (history.length > 0 && new TextEncoder().encode(JSON.stringify({ message: userText, history })).byteLength > 128 * 1024) {
+    history.splice(0, 2);
+  }
+  return history;
+}
+
+const defaultStreamFn: StreamFn = async function* (message, history, signal) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, history }),
+    signal,
   });
   if (!response.ok) {
     throw new Error(`Chat request failed: ${response.status}`);
@@ -95,7 +122,7 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
         ? message
         : { ...message, citedRowIds: [...message.citedRowIds, event.rowId] };
     case "error":
-      return { ...message, status: "error", errorMessage: event.message };
+      return event.fatal ? failMessage(message, event.message) : message;
     case "done":
       return { ...message, status: "done", usage: event.usage, traceId: event.traceId };
     case "thinking_delta":
@@ -103,6 +130,16 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
     default:
       return message;
   }
+}
+
+function failMessage(message: ChatMessage, errorMessage: string): ChatMessage {
+  return {
+    ...message,
+    status: "error",
+    errorMessage,
+    toolTimeline: message.toolTimeline.map((item) => item.status === "running" ? { ...item, status: "error" } : item),
+    spans: message.spans.map((span) => span.status === "running" ? { ...span, status: "error" } : span),
+  };
 }
 
 let idCounter = 0;
@@ -114,13 +151,19 @@ function nextId(): string {
 export function useAgentChat(streamFn: StreamFn = defaultStreamFn) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const abortRef = useRef(false);
+  const activeRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => activeRef.current?.abort(), []);
+
+  const stop = useCallback(() => activeRef.current?.abort(), []);
 
   const send = useCallback(
     async (userText: string) => {
-      const history = messages
-        .filter((m) => m.status !== "streaming")
-        .map((m) => ({ role: m.role, content: m.content }));
+      userText = userText.trim();
+      if (activeRef.current || !userText || userText.length > MAX_MESSAGE_CHARS) return;
+      const controller = new AbortController();
+      activeRef.current = controller;
+      const history = buildChatHistory(messages, userText);
 
       const userMessage: ChatMessage = {
         id: nextId(),
@@ -144,29 +187,37 @@ export function useAgentChat(streamFn: StreamFn = defaultStreamFn) {
 
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setIsStreaming(true);
-      abortRef.current = false;
 
       const updateAssistant = (updater: (m: ChatMessage) => ChatMessage) => {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? updater(m) : m)));
       };
 
       try {
-        for await (const event of streamFn(userText, history)) {
-          if (abortRef.current) break;
+        let terminal = false;
+        for await (const event of streamFn(userText, history, controller.signal)) {
+          if (controller.signal.aborted) break;
           updateAssistant((m) => applyEvent(m, event));
+          if (event.type === "done" || (event.type === "error" && event.fatal)) {
+            terminal = true;
+            break;
+          }
+        }
+        if (!terminal) {
+          updateAssistant((m) => failMessage(m, controller.signal.aborted
+            ? "Response stopped. You can send another message."
+            : "The connection ended before the answer finished. Please try again."));
         }
       } catch (e) {
-        updateAssistant((m) => ({
-          ...m,
-          status: "error",
-          errorMessage: e instanceof Error ? e.message : String(e),
-        }));
+        updateAssistant((m) => failMessage(m, controller.signal.aborted
+          ? "Response stopped. You can send another message."
+          : e instanceof Error ? e.message : String(e)));
       } finally {
+        activeRef.current = null;
         setIsStreaming(false);
       }
     },
     [messages, streamFn]
   );
 
-  return { messages, isStreaming, send };
+  return { messages, isStreaming, send, stop };
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runEvalCase, runEvalSuite } from "./runner.js";
 import type { AgentStreamEvent } from "../src/streaming-types.js";
 import type { GoldenCase } from "./types.js";
@@ -17,6 +17,11 @@ async function* fakeTurn(events: AgentStreamEvent[]): AsyncGenerator<AgentStream
 }
 
 const fakeJudge = async () => ({ meanScore: 4.5, spread: 0.5, citationsValid: true, explanation: "solid answer" });
+const DONE: AgentStreamEvent = {
+  type: "done", traceId: "t1", stopReason: "end_turn",
+  usage: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, estimatedCostUsd: 0.001 },
+  totalDurationMs: 500, iterations: 1, repaired: false,
+};
 
 describe("runEvalCase (offline, scripted fakes — no network)", () => {
   it("scores a well-behaved turn: correct tool, correct citation, judged well", async () => {
@@ -143,9 +148,75 @@ describe("runEvalCase (offline, scripted fakes — no network)", () => {
     const result = await runEvalCase(CASE, { agentTurn: () => fakeTurn(events), judge: fakeJudge });
     expect(result.recallScore).toBe(1);
   });
+
+  it("records agent latency separately from judge processing", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const result = await runEvalCase(CASE, {
+        agentTurn: () => fakeTurn([DONE]),
+        judge: async () => { now.mockReturnValue(99000); return fakeJudge(); },
+      });
+      expect(result.durationMs).toBe(500);
+      expect(result.costUsd).toBe(0.001);
+    } finally { now.mockRestore(); }
+  });
+
+  it("preserves partial output and skips judging when completion is missing", async () => {
+    const judge = vi.fn(fakeJudge);
+    const result = await runEvalCase(CASE, {
+      agentTurn: () => fakeTurn([{ type: "text_delta", traceId: "t1", text: "Partial answer" }]),
+      judge,
+    });
+    expect(result.errored).toBe(true);
+    expect(result.answerText).toBe("Partial answer");
+    expect(result.errorMessage).toContain("completion event");
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it("keeps successful tool and recall results when the judge fails", async () => {
+    const result = await runEvalCase(CASE, {
+      agentTurn: () => fakeTurn([
+        { type: "tool_call", traceId: "t1", toolCallId: "tc1", name: "search_context", input: {} },
+        { type: "citation", traceId: "t1", rowId: "plaid_abc", source: "plaid" }, DONE,
+      ]),
+      judge: async () => { throw new Error("rate limited"); },
+    });
+    expect(result).toMatchObject({ errored: true, toolChoiceScore: 1, recallScore: 1, judgeScore: 0, costUsd: 0.001 });
+    expect(result.errorMessage).toContain("Judge failed");
+  });
+
+  it("does not credit expected IDs mentioned only in a tool error", async () => {
+    const result = await runEvalCase(CASE, {
+      agentTurn: () => fakeTurn([
+        { type: "tool_result", traceId: "t1", toolCallId: "tc1", name: "search_context", isError: true,
+          summary: "Unable to retrieve plaid_abc: database unavailable", durationMs: 1 },
+        DONE,
+      ]),
+      judge: fakeJudge,
+    });
+    expect(result.recallScore).toBe(0);
+    expect(result.seenRowIds).toEqual([]);
+  });
 });
 
 describe("runEvalSuite (offline)", () => {
+  it("continues through a judge failure instead of losing the entire paid run", async () => {
+    const results = await runEvalSuite([{ ...CASE, id: "bad" }, { ...CASE, id: "good" }], {
+      agentTurn: () => fakeTurn([DONE]),
+      judge: async (goldenCase) => {
+        if (goldenCase.id === "bad") throw new Error("judge unavailable");
+        return fakeJudge();
+      },
+    });
+    expect(results.map((result) => [result.id, result.errored])).toEqual([["bad", true], ["good", false]]);
+  });
+
+  it("rejects invalid concurrency and sample counts before making requests", async () => {
+    for (const concurrency of [0, -1, 0.5, NaN]) {
+      await expect(runEvalSuite([CASE], { concurrency, agentTurn: () => fakeTurn([DONE]), judge: fakeJudge })).rejects.toThrow("positive integer");
+    }
+    await expect(runEvalCase(CASE, { judgeN: 0 })).rejects.toThrow("positive integer");
+  });
   it("runs multiple cases concurrently and returns results in input order", async () => {
     const cases: GoldenCase[] = [
       { ...CASE, id: "c1" },

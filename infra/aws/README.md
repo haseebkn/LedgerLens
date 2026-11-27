@@ -25,6 +25,10 @@ agent + retrieval both mount an EFS access point:
 
 Terraform here provisions the **serving path**: the agent's chat API, the retrieval service, and the web frontend. It does **not** run the ingestion pipeline (`extract/`), dbt builds, or the embedding backfill (`vector_prep/embed_context.py`) — those populate `financial_engine.db` and the ChromaDB store, which then need to land on the EFS volumes this stack creates (e.g. via a one-off `aws efs` mount from a bastion, or a scheduled ECS task — not included, since running the actual ingestion against live brokerage/bank APIs from a shared cloud environment is a separate decision from standing up the serving infrastructure).
 
+Agent traces are written to `/data/raw_data/agent_traces` on the warehouse EFS access point so task replacement does not discard them. An out-of-band dbt build must ingest those files before Metrics reflects new traffic. Public evaluation reports ship in the agent image; private and partial reports are excluded from the Docker build context.
+
+The HTTP API has no user authentication or monthly usage cap. Before exposing it publicly, use reviewed synthetic data, add access control and TLS, and enforce an API spending policy. Local container checks and Terraform validation do not establish that this stack has operated successfully on AWS.
+
 ## Setup
 
 ```bash
@@ -64,7 +68,9 @@ See [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) for a C
 
 ## Cost
 
-Rough monthly estimate at the default `var.*_cpu`/`var.*_memory` sizing, `desired_count = 1` each, us-east-1, no traffic-driven autoscaling: Fargate compute (~$45–55), ALB (~$18 + data processing), EFS (~$1–5 depending on data size), ECR storage (~$1), CloudWatch Logs (~$1–5). Roughly **$70–90/mo** — dominated by the ALB and always-on Fargate tasks, not by usage. Scaling `desired_count` to 0 for the agent/retrieval services when not actively demoing removes most of the Fargate cost.
+At the default sizing, the three tasks reserve 1.75 vCPU and 4.5 GiB total. Using 730 hours/month and US East (N. Virginia) Linux/x86 on-demand rates, compute is about **$66.32/month**. The ALB base adds **$16.43**, and five public IPv4 addresses (three tasks plus an assumed two ALB nodes) add **$18.25**. That is roughly **$101/month before** storage, logs, secrets, traffic, taxes, and Anthropic usage. This is an estimate, not a bill; verify the region and actual resources before deployment. Sources: [Fargate](https://aws.amazon.com/fargate/pricing/), [ALB](https://aws.amazon.com/elasticloadbalancing/pricing/), [public IPv4](https://aws.amazon.com/vpc/pricing/).
+
+Scaling tasks to zero does not remove the ALB or its IPv4 charges. A target near $5/month requires a different hosting design, usually a backend that sleeps when idle; that migration is not implemented in this Terraform stack.
 
 ## Tearing down
 

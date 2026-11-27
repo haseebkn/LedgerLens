@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildReport, evaluateGate, formatReportMarkdown, DEFAULT_THRESHOLDS } from "./report.js";
-import type { CaseResult } from "./types.js";
+import { buildReport, evaluateGate, formatReportMarkdown, hashGoldenSet, DEFAULT_THRESHOLDS } from "./report.js";
+import type { CaseResult, EvalRunMetadata, GoldenCase } from "./types.js";
+
+const METADATA: EvalRunMetadata = {
+  goldenSetHash: "test-case-definition-hash", scorerVersion: "2", judgeN: 3,
+  scope: "full", costScope: "agent_only", latencyScope: "agent_only",
+};
 
 function makeResult(overrides: Partial<CaseResult>): CaseResult {
   return {
@@ -92,6 +97,26 @@ describe("evaluateGate", () => {
     expect(gate.passed).toBe(false);
     expect(gate.failures.some((f) => f.includes("zero tolerance"))).toBe(true);
   });
+
+  it("fails a refusal that gave advice without calling tools even when averages pass", () => {
+    const report = buildReport([
+      ...Array.from({ length: 20 }, (_, i) => makeResult({ id: `ok${i}` })),
+      makeResult({ id: "advice", category: "refusal", toolChoiceScore: 1, judgeScore: 1 }),
+    ], "test-model");
+    expect(report.aggregate.meanJudgeScore).toBeGreaterThan(4);
+    expect(evaluateGate(report).failures).toContain("1 refusal case(s) failed (zero tolerance): advice");
+  });
+
+  it("fails incomplete, errored and non-finite evaluations even if aggregate thresholds pass", () => {
+    const report = buildReport([
+      ...Array.from({ length: 20 }, (_, i) => makeResult({ id: `ok${i}` })),
+      makeResult({ id: "judge-error", errored: true, judgeScore: 0 }),
+    ], "test-model");
+    expect(evaluateGate(report).failures).toContain("Evaluation errors: judge-error");
+    expect(evaluateGate({ ...report, totalCases: 100 }).passed).toBe(false);
+    expect(evaluateGate({ ...report, aggregate: { ...report.aggregate, meanJudgeScore: NaN } }).passed).toBe(false);
+    expect(evaluateGate(buildReport([], "test-model")).passed).toBe(false);
+  });
 });
 
 describe("formatReportMarkdown", () => {
@@ -104,8 +129,8 @@ describe("formatReportMarkdown", () => {
   });
 
   it("includes a baseline diff when a baseline is provided", () => {
-    const baseline = buildReport([makeResult({ recallScore: 0.5 })], "claude-opus-5");
-    const current = buildReport([makeResult({ recallScore: 0.9 })], "claude-opus-5");
+    const baseline = buildReport([makeResult({ recallScore: 0.5 })], "claude-opus-5", METADATA);
+    const current = buildReport([makeResult({ recallScore: 0.9 })], "claude-opus-5", METADATA);
     const md = formatReportMarkdown(current, baseline);
     expect(md).toMatch(/vs baseline/);
   });
@@ -126,5 +151,47 @@ describe("formatReportMarkdown", () => {
     const md = formatReportMarkdown(report);
     expect(md).toContain("bad1");
     expect(md).toContain("missed the point");
+  });
+
+  it("suppresses deltas when case definitions, scoring, or measurements differ", () => {
+    const baseline = buildReport([makeResult({ recallScore: 0.5 })], "test-model", METADATA);
+    for (const metadata of [
+      undefined,
+      { ...METADATA, goldenSetHash: "changed-rubric" },
+      { ...METADATA, scorerVersion: "3" },
+      { ...METADATA, judgeN: 1 },
+      { ...METADATA, scope: "partial" as const },
+    ]) {
+      const current = buildReport([makeResult({ recallScore: 0.9 })], "test-model", metadata);
+      expect(formatReportMarkdown(current, baseline)).not.toContain("vs baseline");
+    }
+  });
+
+  it("labels historical latency and distinguishes agent spending from eval spending", () => {
+    const historical = buildReport([makeResult({})], "test-model");
+    expect(formatReportMarkdown(historical)).toContain("Agent cost (judge excluded)");
+    expect(formatReportMarkdown(historical)).toContain("Legacy agent + judge p50 / p95 latency");
+    expect(formatReportMarkdown({ ...historical, metadata: METADATA })).toContain("Agent p50 / p95 latency");
+  });
+
+  it("surfaces invalid citations even when all other scorers pass", () => {
+    const report = buildReport([makeResult({ citationsValid: false })], "test-model");
+    expect(formatReportMarkdown(report)).toContain("Citations valid: false");
+  });
+});
+
+describe("case-definition provenance", () => {
+  const goldenCase: GoldenCase = {
+    id: "case", category: "retrieval", question: "Question?", rubric: "Original rubric",
+    expected_tools: ["search_context"], expected_row_ids: [],
+  };
+  it("detects rubric edits and case replacements with an unchanged case count", () => {
+    const original = hashGoldenSet([goldenCase]);
+    expect(hashGoldenSet([{ ...goldenCase, rubric: "Different rubric" }])).not.toBe(original);
+    expect(hashGoldenSet([{ ...goldenCase, id: "replacement" }])).not.toBe(original);
+  });
+  it("does not mistake execution order for a different case set", () => {
+    const other = { ...goldenCase, id: "other" };
+    expect(hashGoldenSet([goldenCase, other])).toBe(hashGoldenSet([other, goldenCase]));
   });
 });

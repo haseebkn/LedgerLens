@@ -57,6 +57,11 @@ class GoogleCalendarExtractor(BaseAPIClient):
                     creds = None
 
             if not creds:
+                if not settings.google_oauth_interactive:
+                    raise RuntimeError(
+                        "Google Calendar credentials need interactive renewal. "
+                        "Refresh token.json locally before running scheduled ingestion."
+                    )
                 if not os.path.exists(self.credentials_path):
                     raise FileNotFoundError(
                         f"Google credentials file not found at: {self.credentials_path}. "

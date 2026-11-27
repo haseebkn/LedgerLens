@@ -1,6 +1,6 @@
 # Agent Service
 
-A Node/TypeScript service that puts an LLM agent in front of the financial context warehouse: it answers questions by calling tools that search, query, and aggregate real data — never from prior knowledge.
+A Node/TypeScript service that puts an LLM agent in front of the financial context warehouse, with tools for searching, querying, and aggregating data and checks for observed citation provenance.
 
 ## Architecture
 
@@ -27,6 +27,8 @@ The Python side stays Python (ChromaDB and sentence-transformers have no reason 
 | `summarize_spend` | Fixed aggregation: spend/income totals by category or time bucket |
 
 `get_portfolio_snapshot` and `summarize_spend` are deliberately not left to freeform SQL — the arithmetic that matters most for a financial answer should be tested code with a documented sign convention, not regenerated per call.
+
+The freeform SQL tool requires allowed schema-qualified tables, permits scoped non-recursive CTEs and SELECT subqueries, and rejects dynamic table functions and recursive CTEs. Its row cap is not an execution-time or CPU sandbox.
 
 ## Setup
 
@@ -72,6 +74,8 @@ curl http://localhost:8787/api/traces/<trace_id>
 
 `/api/metrics` returns turns/day, mean iterations, repair rate, error rate, total cost, p50/p95 latency, cache-hit rate, and the tool-call distribution — all computed by real SQL against `fct_agent_traces`, not pre-aggregated at write time. Run `dbt build` after generating some traffic to pick up new trace files.
 
+If a turn fails before `done`, the trace preserves usage from completed model spans. Any unreported in-flight usage remains unknown, so failed-turn costs and measured durations are lower bounds. Cache-hit rate includes fresh, cache-created, and cache-read input tokens in its denominator.
+
 ## Testing
 
 ```bash
@@ -79,8 +83,14 @@ npm run typecheck
 npm test
 ```
 
-The DuckDB-backed tool tests (`query-warehouse.test.ts`, `get-portfolio-snapshot.test.ts`, `summarize-spend.test.ts`) run against the real `financial_engine.db` over a read-only connection — no mocking, genuine coverage of the guard + DuckDB composition. `search-context.test.ts` mocks `fetch`. Network smoke tests are skipped automatically under `CI=true`; the committed eval reports are the evidence for the real Anthropic path.
+The DuckDB-backed tool tests use a read-only warehouse connection. CI builds that warehouse from synthetic fixtures. Route and agent-loop tests use deterministic service doubles and never need live model calls. Network smoke tests require explicit `RUN_NETWORK_SMOKE=1`; the committed eval reports are the evidence for the real Anthropic path.
 
 ## Live evaluation
 
-The live Anthropic path has been exercised end to end against the populated warehouse. The current committed baseline runs 34 cases on `claude-sonnet-5` with three independent judge samples per case: 100% tool-choice accuracy, 100% retrieval recall, 4.86/5 mean judge score, and $0.48 total model cost. Run `npm run eval -- --gate`; see [`evals/README.md`](evals/README.md) for targeted runs, privacy redaction, thresholds, and why the data-dependent suite is intentionally not executed in public CI.
+The live Anthropic path has been exercised against the populated warehouse. The August 26 baseline runs 34 cases on `claude-sonnet-5` with three judge samples per case: 100% tool-choice accuracy, 100% retrieval recall, and 4.86/5 mean judge score. Its $0.4771 estimate covers agent usage only, excluding judge calls; historical latency includes judge execution. These results predate the current audit and pricing changes. Run `npm run eval -- --gate`; see [`evals/README.md`](evals/README.md) for measurement semantics, privacy review, and gate thresholds.
+
+## Request limits and cancellation
+
+Chat accepts up to 8,000 characters per message, 40 history entries, 64,000 combined text characters, and 128 KiB per JSON body. The frontend retains recent complete conversation turns within these bounds. Stop or disconnect aborts active model streaming; an already-running native SQL query finishes normally. These per-request bounds are not a monthly spend limit or public authentication system.
+
+The local service binds to `127.0.0.1` by default. The Docker image explicitly uses `HOST=0.0.0.0` for container networking; publish local demo ports on loopback and configure authentication before exposing them publicly.

@@ -9,6 +9,12 @@ models:
   - name: stg_calendar_events
     description: "Parsed Google Calendar events, one row per extraction snapshot."
     columns:
+      - name: start_time
+        description: "UTC instant for timed events; date-only midnight for all-day events. Original source offsets and all_day are retained separately."
+      - name: source_start
+        description: "Original RFC 3339 dateTime or all-day date, preserved before JSON type inference."
+      - name: all_day
+        description: "Date-only event; never shift its dates into another timezone. End date is exclusive."
       - name: event_id
         tests:
           - not_null

@@ -19,6 +19,10 @@ const QueryWarehouseSchema = z
           "main_staging.stg_plaid_transactions (raw per-extraction rows), " +
           "main_intermediate.int_calendar_events, main_intermediate.int_plaid_transactions " +
           "(deduplicated to the freshest state per record). " +
+          "Timed calendar event_timestamp/start_time/end_time values are UTC; raw_payload has explicit " +
+          "start_time_utc/end_time_utc, source_start/source_end, and all_day. All-day dates must not " +
+          "be timezone-shifted, and their end date is exclusive. Use search_context for deterministic " +
+          "user-local calendar clock times rather than treating naive SQL timestamps as local. " +
           "For per-transaction amount/category on fct_context_rows, parse raw_payload: " +
           "CAST(raw_payload AS JSON)->>'$.amount'. Use this tool for counts, sums, filters, and joins " +
           "the other tools don't cover — not for open-ended semantic questions (use search_context)."
@@ -40,7 +44,9 @@ export const queryWarehouseTool = betaZodTool({
   run: async (args) => {
     const guard = guardSql(args.sql);
     if (!guard.ok) {
-      return `Query rejected: ${guard.reason}`;
+      // The SDK converts thrown errors to tool_result.is_error=true, while
+      // preserving this repair guidance for the model's next iteration.
+      throw new Error(`Query rejected: ${guard.reason}`);
     }
 
     try {
@@ -76,7 +82,7 @@ export const queryWarehouseTool = betaZodTool({
         2
       );
     } catch (e) {
-      return `Query failed to execute: ${(e as Error).message}. This usually means a column or table name is wrong — check the schema in the tool description and retry once.`;
+      throw new Error(`Query failed to execute: ${(e as Error).message}. This usually means a column or table name is wrong — check the schema in the tool description and retry once.`, { cause: e });
     }
   },
 });

@@ -2,7 +2,8 @@ import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadGoldenSet, type EvalReport } from "./types.js";
 import { runEvalSuite } from "./runner.js";
-import { buildReport, evaluateGate, formatReportMarkdown, DEFAULT_THRESHOLDS } from "./report.js";
+import { buildReport, evaluateGate, formatReportMarkdown, hashGoldenSet, DEFAULT_THRESHOLDS } from "./report.js";
+import { parseEvalArgs } from "./cli.js";
 import { env } from "../src/config.js";
 
 /**
@@ -18,23 +19,8 @@ const REPORTS_DIR = join(EVALS_DIR, "reports");
 const PRIVATE_REPORTS_DIR = join(REPORTS_DIR, "private");
 const BASELINE_PATH = join(EVALS_DIR, "baseline.json");
 
-function parseArgs(argv: string[]) {
-  const subsetIdx = argv.indexOf("--subset");
-  const subset = subsetIdx >= 0 ? Number(argv[subsetIdx + 1]) : undefined;
-  const casesIdx = argv.indexOf("--cases");
-  const caseIds = casesIdx >= 0 ? argv[casesIdx + 1]?.split(",").filter(Boolean) : undefined;
-  const judgeIdx = argv.indexOf("--judge-n");
-  const judgeN = judgeIdx >= 0 ? Number(argv[judgeIdx + 1]) : undefined;
-  const gate = argv.includes("--gate");
-  const write = !argv.includes("--no-write");
-  if (subset !== undefined && (!Number.isInteger(subset) || subset < 1)) throw new Error("--subset must be a positive integer");
-  if (judgeN !== undefined && (!Number.isInteger(judgeN) || judgeN < 1)) throw new Error("--judge-n must be a positive integer");
-  if (subset && caseIds) throw new Error("Use either --subset or --cases, not both");
-  return { subset, caseIds, judgeN, gate, write };
-}
-
 async function main() {
-  const { subset, caseIds, judgeN: requestedJudgeN, gate, write } = parseArgs(process.argv.slice(2));
+  const { subset, caseIds, judgeN: requestedJudgeN, gate, write } = parseEvalArgs(process.argv.slice(2));
 
   let cases = loadGoldenSet(join(EVALS_DIR, "golden.jsonl"));
   if (subset) cases = cases.slice(0, subset);
@@ -49,11 +35,18 @@ async function main() {
   console.log(`Running ${cases.length} case(s) against ${env.AGENT_MODEL}, judge n=${judgeN}...`);
 
   const results = await runEvalSuite(cases, { concurrency: 4, judgeN });
-  const report = buildReport(results, env.AGENT_MODEL);
+  const scope = subset !== undefined || caseIds !== undefined ? "partial" : "full";
+  const report = buildReport(results, env.AGENT_MODEL, {
+    goldenSetHash: hashGoldenSet(cases),
+    scorerVersion: "2",
+    judgeN,
+    scope,
+    costScope: "agent_only",
+    latencyScope: "agent_only",
+  });
 
-  // reports/ is empty in a fresh clone and Git does not preserve empty
-  // directories. Create it at write time so the documented command works
-  // without a manual mkdir step.
+  // Create output directories at write time; private/ and partial/ may not
+  // exist in a fresh clone.
   const timestamp = report.runAt.replace(/[:.]/g, "-");
 
   const baseline: EvalReport | undefined = existsSync(BASELINE_PATH)
@@ -62,7 +55,8 @@ async function main() {
 
   const markdown = formatReportMarkdown(report, baseline);
   if (write) {
-    mkdirSync(REPORTS_DIR, { recursive: true });
+    const publicDir = scope === "partial" ? join(REPORTS_DIR, "partial") : REPORTS_DIR;
+    mkdirSync(publicDir, { recursive: true });
     mkdirSync(PRIVATE_REPORTS_DIR, { recursive: true });
     writeFileSync(join(PRIVATE_REPORTS_DIR, `${timestamp}.json`), JSON.stringify(report, null, 2));
 
@@ -73,8 +67,12 @@ async function main() {
       ...report,
       results: report.results.map(({ answerText: _answerText, seenRowIds: _seenRowIds, errorMessage: _error, ...result }) => result),
     };
-    writeFileSync(join(REPORTS_DIR, `${timestamp}.json`), JSON.stringify(publicReport, null, 2));
-    writeFileSync(join(REPORTS_DIR, `${timestamp}.md`), markdown);
+    writeFileSync(join(publicDir, `${timestamp}.json`), JSON.stringify(publicReport, null, 2));
+    const publicSummary = {
+      ...report,
+      results: report.results.map((result) => ({ ...result, errorMessage: result.errored ? "See the private local report for error details." : undefined })),
+    };
+    writeFileSync(join(publicDir, `${timestamp}.md`), formatReportMarkdown(publicSummary, baseline));
   }
   console.log(markdown);
 

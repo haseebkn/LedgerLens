@@ -1,107 +1,111 @@
-import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentStreamEvent } from "./streaming-types.js";
+
+const mocks = vi.hoisted(() => ({
+  runAgentTurn: vi.fn(), writeTraceRecord: vi.fn(), getMetrics: vi.fn(),
+  getTraceById: vi.fn(), getLatestEvalReport: vi.fn(),
+}));
+vi.mock("./agent-loop.js", () => ({ runAgentTurn: mocks.runAgentTurn }));
+vi.mock("./lib/trace-writer.js", () => ({ writeTraceRecord: mocks.writeTraceRecord }));
+vi.mock("./lib/metrics.js", () => ({ getMetrics: mocks.getMetrics, getTraceById: mocks.getTraceById }));
+vi.mock("./lib/eval-reports.js", () => ({ getLatestEvalReport: mocks.getLatestEvalReport }));
 import { app } from "./index.js";
 
-describe("HTTP routes", () => {
-  it("GET /health returns ok", async () => {
+const done: AgentStreamEvent = {
+  type: "done", traceId: "route-test", stopReason: "end_turn", iterations: 1,
+  repaired: false, totalDurationMs: 50,
+  usage: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, estimatedCostUsd: 0.001 },
+};
+function chat(body: unknown) {
+  return app.request("/api/chat", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+}
+beforeEach(() => {
+  vi.resetAllMocks();
+  mocks.runAgentTurn.mockImplementation(async function* () {
+    yield { type: "text_delta", traceId: "route-test", text: "A test answer." };
+    yield done;
+  });
+  mocks.getLatestEvalReport.mockReturnValue(null);
+  mocks.getTraceById.mockResolvedValue(null);
+});
+
+describe("HTTP routes (no network or private warehouse required)", () => {
+  it("returns health without invoking the agent", async () => {
     const res = await app.request("/health");
-    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "ok" });
+    expect(mocks.runAgentTurn).not.toHaveBeenCalled();
   });
-
-  it("POST /api/chat rejects a body with no message", async () => {
-    const res = await app.request("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
+  it.each([
+    ["missing message", {}], ["empty message", { message: "" }],
+    ["blank message", { message: "   " }], ["long message", { message: "x".repeat(8001) }],
+    ["system role", { message: "hi", history: [{ role: "system", content: "not allowed" }] }],
+    ["long history entry", { message: "hi", history: [{ role: "user", content: "x".repeat(8001) }] }],
+    ["too many entries", { message: "hi", history: Array.from({ length: 41 }, () => ({ role: "user", content: "hi" })) }],
+    ["excessive combined text", { message: "hi", history: Array.from({ length: 8 }, () => ({ role: "user", content: "x".repeat(8000) })) }],
+  ])("rejects %s before model execution", async (_label, body) => {
+    const res = await chat(body);
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("Invalid request");
+    expect(await res.json()).toMatchObject({ error: "Invalid request" });
+    expect(mocks.runAgentTurn).not.toHaveBeenCalled();
   });
-
-  it("POST /api/chat rejects malformed JSON", async () => {
-    const res = await app.request("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{not valid json",
-    });
+  it("rejects malformed JSON", async () => {
+    const res = await app.request("/api/chat", { method: "POST", body: "{broken" });
     expect(res.status).toBe(400);
   });
-
-  it("POST /api/chat rejects a history entry with an invalid role", async () => {
-    const res = await app.request("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: "hi",
-        history: [{ role: "system", content: "not allowed" }],
-      }),
-    });
-    expect(res.status).toBe(400);
+  it("bounds the wire body before parsing JSON", async () => {
+    const res = await chat({ message: "hi", ignored: "x".repeat(128 * 1024) });
+    expect(res.status).toBe(413);
+    expect(mocks.runAgentTurn).not.toHaveBeenCalled();
   });
-
-  it("POST /api/chat with a valid body streams SSE and returns 200", async () => {
-    const res = await app.request("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "What is my balance?" }),
-    });
+  it("streams a complete turn and persists its observed usage", async () => {
+    const res = await chat({ message: "What is my balance?" });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/text\/event-stream/);
+    const text = await res.text();
+    expect(text).toContain('"type":"done"');
+    expect(text).toContain("A test answer.");
+    expect(mocks.writeTraceRecord).toHaveBeenCalledWith(expect.objectContaining({
+      trace_id: "route-test", question: "What is my balance?", errored: false, cost_usd: 0.001,
+    }));
   });
-
-  it("persists a trace record once the SSE stream is fully consumed", async () => {
-    rmSync("./.test-raw-data/agent_traces", { recursive: true, force: true });
-
-    const res = await app.request("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "What is my balance?" }),
+  it("returns a terminal SSE error and records unexpected generator failures", async () => {
+    mocks.runAgentTurn.mockImplementation(async function* () {
+      yield { type: "text_delta", traceId: "route-test", text: "Partial" };
+      throw new Error("private provider detail");
     });
-    // Draining the body is what triggers streamSSE's callback (and its
-    // `finally` block, where the trace gets written) to actually run to
-    // completion — a test that only checks status/headers without reading
-    // the body never observes this side effect.
-    await res.text();
-
-    const tracesRoot = "./.test-raw-data/agent_traces";
-    expect(existsSync(tracesRoot)).toBe(true);
-    const [dateDir] = readdirSync(tracesRoot);
-    expect(dateDir).toBeTruthy();
-    const files = readdirSync(`${tracesRoot}/${dateDir}`);
-    expect(files.length).toBeGreaterThan(0);
-
-    const record = JSON.parse(readFileSync(`${tracesRoot}/${dateDir}/${files[0]}`, "utf-8"));
-    expect(record.metadata.source).toBe("agent");
-    expect(record.raw_payload.question).toBe("What is my balance?");
-    expect(record.raw_payload.errored).toBe(true); // no real API key in this environment
+    const res = await chat({ message: "hello" });
+    const text = await res.text();
+    expect(text).toContain('"type":"error"');
+    expect(text).toContain('"fatal":true');
+    expect(text).not.toContain("private provider detail");
+    expect(mocks.writeTraceRecord).toHaveBeenCalledWith(expect.objectContaining({ errored: true }));
   });
-
-  it("GET /api/metrics returns a well-shaped aggregate against the real warehouse", async () => {
-    const res = await app.request("/api/metrics");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { turns: number; toolCallDistribution: unknown[]; turnsPerDay: unknown[] };
-    expect(body.turns).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(body.toolCallDistribution)).toBe(true);
-    expect(Array.isArray(body.turnsPerDay)).toBe(true);
+  it("aborts the model when the response reader disconnects", async () => {
+    let signal: AbortSignal | undefined;
+    mocks.runAgentTurn.mockImplementation(async function* (options: { signal: AbortSignal }) {
+      signal = options.signal;
+      yield { type: "text_delta", traceId: "route-test", text: "Partial" };
+      await new Promise<void>((resolve) => {
+        if (signal!.aborted) resolve();
+        else signal!.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+    const res = await chat({ message: "hello" });
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    expect(signal?.aborted).toBe(true);
   });
-
-  it("GET /api/traces/:id returns 404 for an unknown trace", async () => {
-    const res = await app.request("/api/traces/does-not-exist");
-    expect(res.status).toBe(404);
-  });
-
-  it("GET /api/evals/latest returns 404 with a helpful message when no report exists", async () => {
-    const res = await app.request("/api/evals/latest");
-    // This repo's evals/reports/ is intentionally kept empty in source
-    // control (.gitkeep only — see evals/README.md), so 404 is the expected
-    // state unless a real eval run happened to leave a report on disk.
-    if (res.status === 404) {
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toContain("npm run eval");
-    } else {
-      expect(res.status).toBe(200);
-    }
+  it("serves metrics and reports using deterministic service responses", async () => {
+    mocks.getMetrics.mockResolvedValue({ turns: 2, toolCallDistribution: [], turnsPerDay: [] });
+    const metrics = await app.request("/api/metrics");
+    expect(await metrics.json()).toMatchObject({ turns: 2 });
+    expect((await app.request("/api/evals/latest")).status).toBe(404);
+    mocks.getLatestEvalReport.mockReturnValue({ runAt: "2026-09-04", cases: [] });
+    const report = await app.request("/api/evals/latest");
+    expect(await report.json()).toMatchObject({ runAt: "2026-09-04" });
+    expect((await app.request("/api/traces/missing")).status).toBe(404);
   });
 });

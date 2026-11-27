@@ -71,14 +71,20 @@ with DAG(
         task_id="extract_landing_data",
         # Execute extractor runner within the mapped volume path inside the container
         bash_command="python /usr/local/airflow/project/extract/run_extraction.py",
-        env={**os.environ, "PYTHONPATH": "/usr/local/airflow/project"},
+        cwd="/usr/local/airflow/project",
+        env={
+            **os.environ,
+            "PYTHONPATH": "/usr/local/airflow/project",
+            "GOOGLE_OAUTH_INTERACTIVE": "false",
+        },
     )
 
     # Task 2: Compile and run dbt models
     dbt_transform = BashOperator(
         task_id="dbt_transform",
         # Runs build: compiles, executes staging/intermediate/marts views/tables, and runs checks
-        bash_command="dbt build --project-dir /usr/local/airflow/project/transform --profiles-dir /usr/local/airflow/project/transform",
+        bash_command="/usr/local/airflow/dbt-venv/bin/dbt build --project-dir /usr/local/airflow/project/transform --profiles-dir /usr/local/airflow/project/transform",
+        cwd="/usr/local/airflow/project/transform",
     )
 
     # Task 3: Sync DuckDB database back to AWS S3

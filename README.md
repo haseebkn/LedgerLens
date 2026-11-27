@@ -1,23 +1,37 @@
-# 🌌 Financial & Communication Context Engine
+# Financial Context Engine
 
 [![CI](https://github.com/haseebkn/financial-context-elt-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/haseebkn/financial-context-elt-pipeline/actions/workflows/ci.yml)
 
-This project is a shipped, tool-using financial context agent over real Plaid, Alpaca, and Google Calendar data. Claude Sonnet answers questions like *"did I go rock climbing recently?"* or *"how much did I spend by category?"* by searching semantic context, running guarded SQL, and invoking deterministic financial tools—not by guessing from the prompt. Every turn streams its tool trace, validates citations against observed provenance, and records token cost and latency.
+## Watch the 2:47 walkthrough
 
-The current 34-case Sonnet evaluation reports **100% tool-choice accuracy, 100% retrieval recall, and 4.86/5 mean judge score** at **$0.48** for the complete run. Those numbers came after live failures: the agent checked only calendar data for an activity question, asked for timeframes instead of answering aggregates, promoted recurring charges to a membership claim, and exhausted its tool loop without producing an answer. Each failure became a prompt, provenance, or eval-contract regression test. Fintech is a domain where "the agent sounded right" is not enough; this repo is built to make correctness observable and failures reproducible.
+[![Watch the LedgerLens walkthrough — 2 minutes 47 seconds](docs/media/LedgerLens-thumbnail.png)](#play-the-walkthrough)
+
+A guided tour of ingestion, cited answers, execution traces, metrics, and evaluation. The chat uses synthetic records; provider examples use Plaid Sandbox and Alpaca Paper. [Watch the video](#play-the-walkthrough).
+
+### Play the walkthrough
+
+https://github.com/user-attachments/assets/cc8d7947-8761-4341-998c-68d1bab9fa99
+
+An independently built portfolio project exploring a problem relevant to wealth-management software: answering questions across financial records and calendar activity with inspectable evidence. A React/TypeScript interface connects to a Node.js Claude agent, four warehouse tools, and a Python retrieval service. Each turn exposes tool execution, citation identifiers, token usage, and latency so failures can be investigated.
+
+The committed **August 26, 2026** Sonnet run reports **100% tool-choice accuracy, 100% retrieval recall, and 4.86/5 mean judge score across 34 cases**. Its **$0.4771 estimated agent cost excludes judge calls** and uses the pricing recorded at the time. These are historical results on a small, personal-data golden set, not a claim about production accuracy or the current audited code. Live use exposed calendar-only activity answers, unnecessary clarification, unsupported membership claims, and tool-loop exhaustion; the repository records the resulting prompt and evaluation changes.
+
+**Start here:** [reviewer walkthrough and Verlo role mapping](docs/PORTFOLIO.md) · [audit findings and verification](docs/AUDIT.md) · [raw evaluation evidence](agent/evals/reports/2026-08-26T01-34-34-845Z.md)
+
+The agent has been exercised locally with live model calls. It is a single-user prototype with deployment configuration; customer adoption and an operating public deployment are not claimed. This project is independent of Verlo.
 
 ---
 
 ## 🚀 Key Features
 
-*   **Tool-Using Claude Agent (`agent/`):** Answers financial questions by calling real warehouse tools — `search_context`, `query_warehouse`, `get_portfolio_snapshot`, `summarize_spend` — never from prior knowledge. Freeform SQL is gated by a table allowlist and banned-function blocklist (`lib/sql-guard.ts`); every claim in an answer is checked against a cited row before it reaches the user.
-*   **Observability built in, not bolted on:** Every turn writes a span-level trace (LLM calls, tool executions, citation checks) into the same warehouse the agent queries — `/api/metrics` computes turns/day, error and repair rates, cache-hit rate, cost, and latency percentiles with real SQL against that trace data, not counters kept in memory.
+*   **Tool-Using Claude Agent (`agent/`):** Answers financial questions through `search_context`, `query_warehouse`, `get_portfolio_snapshot`, and `summarize_spend`. Freeform SQL is gated by a table/function policy and bounded results (`lib/sql-guard.ts`). Citation validation checks identifiers against observed tool-result provenance; it does not prove that every natural-language claim is supported.
+*   **Observable execution:** The UI receives spans for LLM calls, tool execution, and citation checks. Each turn also writes a summary to `raw_data/agent_traces`; dbt ingests it into the warehouse. `/api/metrics` computes error/repair rates, cache-hit rate, cost, latency, and traffic from those persisted summaries.
 *   **An eval harness that scores agents, not vibes (`agent/evals/`):** Tool-choice accuracy, retrieval recall, and an LLM-judge score (sampled n=3, spread reported rather than trusted as a point estimate) against 34 golden questions. Scorer/report logic runs in CI; the privacy-sensitive live suite runs locally against the real warehouse.
-*   **React Chat Frontend (`web/`):** A streaming SSE chat UI with inline citation chips and a per-message trace waterfall, plus Metrics and Evals tabs backed directly by the warehouse.
+*   **React Chat Frontend (`web/`):** Streaming SSE chat, inline citation chips, and a per-message waterfall, plus warehouse-backed Metrics and file-backed Evals.
 *   **Analytical Warehouse (`transform/`):** A dbt-modeled DuckDB warehouse (staging → marts) over trades, transactions, calendar events, and the agent's own traces.
 *   **Multi-Source API Ingestion (`extract/`):** Extractors for Alpaca Markets, Plaid, and Google Calendar, orchestrated by Astronomer Airflow with backup sync to AWS S3.
 *   **Local GPU Vectorization (`vector_prep/`):** `sentence-transformers` embeddings generated on local GPU (CUDA), upserted incrementally to ChromaDB and served to the agent through an internal retrieval service.
-*   **Containerized and deployable (`infra/aws/`):** Production Dockerfiles for all three services and a Terraform stack (ECS Fargate, ALB, EFS, Secrets Manager) to run them on AWS.
+*   **Containerized serving path (`infra/aws/`):** Dockerfiles for all three services and a Terraform stack (ECS Fargate, ALB, EFS, Secrets Manager). Public access control, TLS, spend limits, and a reviewed demo dataset are still deployment prerequisites.
 
 ---
 
@@ -101,8 +115,9 @@ financial-context-elt-pipeline/
 ## 🛠️ Setup & Installation
 
 ### Prerequisites
-*   **Python:** `3.10` or higher recommended.
-*   **GPU Drivers:** NVIDIA GPU with CUDA setup (required for high-performance PyTorch embedding generation).
+*   **Node.js:** `22.12` or later in the Node 22 release line (or a compatible newer version).
+*   **Python:** `3.11` matches CI and the pinned embedding dependencies.
+*   **GPU Drivers:** CUDA is optional; embedding generation also supports CPU. The default requirements select CUDA wheels; CI uses CPU PyTorch.
 *   **Docker:** Required for running the local Airflow/Astronomer orchestration.
 
 ### Step 1: Clone the Repository
@@ -191,23 +206,24 @@ python vector_prep/verify_embeddings.py
 ### 5. Launch the Agent + Chat Frontend
 Three services make up the agent stack: the retrieval service (semantic search over ChromaDB), the agent service (the Claude tool-using loop + REST/SSE API), and the React chat UI.
 
+Run `npm ci` once from the repository root. Copy `agent/.env.example` to `agent/.env`, set `ANTHROPIC_API_KEY`, and set the same `RETRIEVAL_SERVICE_TOKEN` in both that file and the root `.env`. The root pipeline `.env` alone does not configure the Node agent.
+
 ```bash
 # Terminal 1 — retrieval service
 uvicorn vector_prep.retrieval_service:app --host 127.0.0.1 --port 8100
 
 # Terminal 2 — agent service
-cd agent && npm install && npm run dev
+npm run dev:agent
 
 # Terminal 3 — web frontend
-npm install --workspace web
-npm run dev --workspace web
+npm run dev:web
 ```
 
 Open [http://localhost:5173](http://localhost:5173) for the chat UI — it proxies `/api/*` to the agent service and includes Chat, Metrics, and Evals tabs.
 
 ### Verified evaluation evidence
 
-The committed Sonnet baseline is rendered directly by the Evals tab:
+The committed August 26 Sonnet baseline is rendered directly by the Evals tab. The audit corrected measurement labels while retaining the original reports:
 
 | Metric | Sonnet 5, 34 cases |
 |---|---:|
@@ -215,14 +231,16 @@ The committed Sonnet baseline is rendered directly by the Evals tab:
 | Retrieval recall | 100% |
 | Mean LLM-judge score | 4.86 / 5 |
 | Judge spread (mean / max) | 0.12 / 1.00 |
-| p50 / p95 latency | 11.7s / 24.3s |
-| Complete-run cost | $0.48 |
+| Historical p50 / p95 case duration (agent + judge) | 11.7s / 24.3s |
+| Historical estimated agent cost (judge excluded) | $0.4771 |
 
 ![Live Sonnet evaluation dashboard](docs/screenshots/evals-sonnet.png)
 
+This screenshot predates the audit; the current UI labels agent cost and legacy case duration explicitly. New runs measure agent latency separately. A fresh paid evaluation is needed before attributing quality improvements to the audit fixes.
+
 The raw report is committed under [`agent/evals/reports/`](agent/evals/reports/). One raw judge false negative is retained and manually adjudicated rather than silently edited out: the judge called a real `$2,078.50` Payment row fabricated and demanded both sides of an explicitly either/or rubric. After clarifying the contract, a targeted n=3 rerun scored that case 5/5 with zero spread. This is why the harness reports judge spread and keeps human adjudication visible.
 
-The Metrics tab is populated from persisted span traces rather than frontend counters. It exposes iteration count, observed error/repair rates, prompt-cache hit rate, model cost, latency percentiles, tool distribution, and traffic by day:
+The Metrics tab is populated from persisted turn summaries after a dbt refresh. It exposes iteration count, observed error/repair rates, prompt-cache hit rate, model cost, latency percentiles, tool distribution, and traffic by day:
 
 ![Span-derived agent metrics](docs/screenshots/metrics-observability.png)
 
@@ -275,7 +293,7 @@ A few decisions worth being explicit about, in case they read as gaps rather tha
 
 *   **The Anthropic path has been exercised end to end.** The live agent completed dozens of real tool-using turns against the populated warehouse, followed by multiple 34-case Opus and Sonnet runs. That exposed behavior unit tests could not: calendar-only activity conclusions, clarification loops on unspecified totals, aggregate claims cited with sample rows, membership claims inferred from recurring billing, and a tool loop that consumed every iteration without returning prose.
 *   **CI doesn't fake coverage it doesn't have.** Where fixture data doesn't match production data shape closely enough to make a green check mean something, the gap is documented rather than wired into a misleading gate.
-*   **The AWS deployment optimizes for cost over isolation** (public subnets instead of a NAT gateway, no HTTPS without a real domain) — a reasonable trade for a single-service portfolio deploy, explicitly not a template for a workload handling real funds. See `infra/aws/README.md` for the reasoning.
+*   **The AWS stack is a deployment exercise, not the proposed $5/month host.** Its three always-running tasks, load balancer, and public IPv4 addresses incur idle charges. It needs TLS, access control, and reviewed demo data before public use. See `infra/aws/README.md` for the deployment boundary.
 *   **Two real bugs were caught by testing against real state instead of trusting the first green run:** an incremental dbt model using the wrong watermark column, and a `view`-materialized model whose `read_json_auto()` path resolved against the caller's working directory instead of build time — both invisible until something queried the model from a different directory than the one it was built from.
 
 ### Building with coding agents

@@ -6,7 +6,8 @@ import { z } from "zod";
  * TypeScript mirror of config/settings.py on the Python side.
  */
 const EnvSchema = z.object({
-  PORT: z.coerce.number().int().positive().default(8787),
+  HOST: z.string().min(1).default("127.0.0.1"),
+  PORT: z.coerce.number().int().positive().max(65535).default(8787),
   ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required to run the agent loop"),
   AGENT_MODEL: z.string().default("claude-sonnet-5"),
 

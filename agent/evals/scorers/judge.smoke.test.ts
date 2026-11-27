@@ -10,7 +10,7 @@ import type { GoldenCase } from "../types.js";
  * not a local crash. Skipped in CI.
  */
 describe("judgeSingle (network smoke test — no real API key required)", () => {
-  it.skipIf(process.env.CI)("reaches the API and fails with a structured auth error", async () => {
+  it.skipIf(process.env.CI || process.env.RUN_NETWORK_SMOKE !== "1")("reaches the API and fails with a structured auth error", async () => {
     const goldenCase: GoldenCase = {
       id: "smoke-1",
       category: "retrieval",

@@ -15,17 +15,17 @@ export class SseFrameParser {
     this.buffer += chunk;
     const events: AgentStreamEvent[] = [];
 
-    let boundary: number;
-    while ((boundary = this.buffer.indexOf("\n\n")) !== -1) {
+    let delimiter: RegExpExecArray | null;
+    while ((delimiter = /\r?\n\r?\n/.exec(this.buffer)) !== null) {
+      const boundary = delimiter.index;
       const frame = this.buffer.slice(0, boundary);
-      this.buffer = this.buffer.slice(boundary + 2);
+      this.buffer = this.buffer.slice(boundary + delimiter[0].length);
 
-      const dataLine = frame
-        .split("\n")
-        .find((line) => line.startsWith("data:"));
-      if (!dataLine) continue;
-
-      const json = dataLine.slice(5).trim();
+      const json = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n");
       if (!json) continue;
 
       try {
@@ -57,6 +57,10 @@ export async function* streamAgentEvents(response: Response): AsyncGenerator<Age
       }
     }
   } finally {
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }

@@ -66,6 +66,17 @@
   overflow: hidden;
 }
 
+.app-panel:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.app-panel[hidden] {
+  display: none;
+}
+
 /* ---------- chat ---------- */
 
 .chat-view {

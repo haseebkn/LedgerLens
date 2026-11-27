@@ -1,7 +1,8 @@
 FROM quay.io/astronomer/astro-runtime:11.3.0
 
-# Install additional system packages if needed
-USER root
-RUN apt-get update && apt-get install -y git && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Astro's ONBUILD hooks install packages.txt and requirements.txt and copy the
+# DAGs. Keep the runtime's own non-root user; no extra system packages are needed.
 
-USER airflow
+# Keep dbt's protobuf/OpenTelemetry dependencies out of Airflow's provider env.
+RUN python -m venv /usr/local/airflow/dbt-venv \
+    && /usr/local/airflow/dbt-venv/bin/pip install --no-cache-dir -r requirements-dbt.txt

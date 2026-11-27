@@ -6,7 +6,7 @@
  */
 
 const CITATION_PATTERN = /\[([a-zA-Z0-9_-]+)\](?!\()/g;
-const ROW_ID_PATTERN = /\b((?:(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+))\b/g;
+const ROW_ID_PATTERN = /^(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+$/;
 
 /** Extracts every [row_id]-style citation token from the answer text. */
 export function extractCitations(text: string): string[] {
@@ -14,10 +14,31 @@ export function extractCitations(text: string): string[] {
   return [...new Set(matches)];
 }
 
-/** Extracts every row_id-shaped token appearing anywhere in a tool result string. */
+/** Trust structured provenance fields, never IDs merely mentioned in retrieved prose or an error. */
 export function extractRowIdsFromToolResult(toolResultText: string): string[] {
-  const matches = [...toolResultText.matchAll(ROW_ID_PATTERN)].map((m) => m[1]!);
-  return matches;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(toolResultText);
+  } catch {
+    return [];
+  }
+  const ids = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && ROW_ID_PATTERN.test(value)) ids.add(value);
+  };
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "row_id" || key === "result_id") add(child);
+        else if (key === "sample_row_ids" && Array.isArray(child)) child.forEach(add);
+        else if (key !== "raw_payload") visit(child);
+      }
+    }
+  };
+  visit(parsed);
+  return [...ids];
 }
 
 export interface CitationValidation {
