@@ -1,5 +1,5 @@
 import { sourceFromRowId } from "../lib/message-parts.js";
-import { useOpenSource } from "./SourceDrawer.js";
+import { useOpenSource } from "../lib/source-rows.js";
 
 const SOURCE_COLOR: Record<string, string> = {
   Calendar: "#a78bfa",

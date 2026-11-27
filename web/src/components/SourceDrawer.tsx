@@ -1,38 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { sourceFromRowId } from "../lib/message-parts.js";
-
-/**
- * The record behind a citation, as returned by GET /api/rows/:rowId
- * (agent/src/lib/rows.ts).
- */
-export type RowLookup =
-  | { kind: "source"; rowId: string; source: string; eventTimestamp: string | null; summaryText: string | null; payload: unknown }
-  | { kind: "account_snapshot"; rowId: string; snapshot: Record<string, unknown> }
-  | {
-      kind: "computed";
-      rowId: string;
-      resultKind: "query" | "spend";
-      sql: string;
-      params?: unknown[];
-      rows: Record<string, unknown>[];
-      summary?: Record<string, unknown>;
-    };
-
-export type FetchRow = (rowId: string, signal: AbortSignal) => Promise<RowLookup>;
-
-export const defaultFetchRow: FetchRow = async (rowId, signal) => {
-  const response = await fetch(`/api/rows/${encodeURIComponent(rowId)}`, { signal });
-  const body = (await response.json().catch(() => null)) as (RowLookup & { error?: string }) | null;
-  if (!response.ok || !body) throw new Error(body?.error ?? `Could not load ${rowId} (${response.status})`);
-  return body;
-};
-
-const OpenSourceContext = createContext<((rowId: string) => void) | null>(null);
-
-/** Returns the drawer opener, or null outside a provider (chips then render as plain labels). */
-export function useOpenSource() {
-  return useContext(OpenSourceContext);
-}
+import { defaultFetchRow, OpenSourceContext, type FetchRow, type RowLookup } from "../lib/source-rows.js";
 
 export function SourceDrawerProvider({ children, fetchRow = defaultFetchRow }: { children: ReactNode; fetchRow?: FetchRow }) {
   const [rowId, setRowId] = useState<string | null>(null);
@@ -50,7 +18,8 @@ export function SourceDrawerProvider({ children, fetchRow = defaultFetchRow }: {
   return (
     <OpenSourceContext.Provider value={open}>
       {children}
-      {rowId && <SourceDrawer rowId={rowId} fetchRow={fetchRow} onClose={close} />}
+      {/* Keyed by row, so opening another citation starts from a fresh loading state. */}
+      {rowId && <SourceDrawer key={rowId} rowId={rowId} fetchRow={fetchRow} onClose={close} />}
     </OpenSourceContext.Provider>
   );
 }
@@ -63,7 +32,6 @@ function SourceDrawer({ rowId, fetchRow, onClose }: { rowId: string; fetchRow: F
 
   useEffect(() => {
     const controller = new AbortController();
-    setState({ status: "loading" });
     fetchRow(rowId, controller.signal)
       .then((row) => setState({ status: "ready", row }))
       .catch((e: unknown) => {

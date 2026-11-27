@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { SourceDrawerProvider, type FetchRow } from "./SourceDrawer.js";
+import { SourceDrawerProvider } from "./SourceDrawer.js";
+import type { FetchRow } from "../lib/source-rows.js";
 import { MessageText } from "./MessageText.js";
 
 afterEach(cleanup);
@@ -40,6 +41,19 @@ describe("citation source drawer", () => {
     expect(await screen.findByText(/SELECT SUM\(amount\)/)).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "total" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "12" })).toBeInTheDocument();
+  });
+
+  it("switches to another citation while the drawer is open", async () => {
+    const fetchRow: FetchRow = async (rowId) => ({
+      kind: "source", rowId, source: "plaid", eventTimestamp: null, summaryText: `Summary for ${rowId}`, payload: {},
+    });
+    renderAnswer("Coffee [plaid_a] and lunch [plaid_b].", fetchRow);
+    fireEvent.click(screen.getByRole("button", { name: /plaid_a/ }));
+    expect(await screen.findByText("Summary for plaid_a")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /plaid_b/ }));
+    expect(await screen.findByText("Summary for plaid_b")).toBeInTheDocument();
+    expect(screen.queryByText("Summary for plaid_a")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
 
   it("explains a lookup failure and closes on Escape", async () => {
