@@ -184,3 +184,21 @@ describe("guardSql", () => {
     expect(guardSql("WITH RECURSIVE x AS (SELECT * FROM main_analytics.fct_context_rows UNION ALL SELECT * FROM x) SELECT * FROM x").ok).toBe(false);
   });
 });
+
+describe("guardSql string-literal handling", () => {
+  it.each(["%installment%", "%global%", "%important%", "%payload%"])(
+    "allows an ILIKE search for a word containing a banned keyword: %s",
+    (term) => {
+      const result = guardSql(`SELECT row_id FROM main_analytics.fct_context_rows WHERE summary_text ILIKE '${term}'`);
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it("still rejects a file-reading call whose argument is a string literal", () => {
+    expect(guardSql("SELECT * FROM read_text('agent/.env')").ok).toBe(false);
+  });
+
+  it("does not let an escaped quote hide a banned call", () => {
+    expect(guardSql("SELECT 'it''s' AS a, * FROM read_text('x')").ok).toBe(false);
+  });
+});

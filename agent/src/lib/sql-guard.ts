@@ -2,13 +2,12 @@ import pkg from "node-sql-parser";
 const { Parser } = pkg;
 
 /**
- * Validates and sanitizes SQL before it ever reaches DuckDB. This is the
- * defense-in-depth layer behind the query_warehouse tool: the DuckDB
- * connection is also opened READ_ONLY (see lib/duckdb.ts), but READ_ONLY
- * only blocks writes — it does NOT block DuckDB's file-reading table
- * functions (read_csv_auto, read_json_auto, ...), which can read arbitrary
- * local files regardless of read-only mode. That gap is why the function
- * blocklist below exists alongside the table allowlist, not instead of it.
+ * Validates SQL before it reaches DuckDB and turns mistakes into repair
+ * guidance the model can act on. This is a helpful error layer, NOT the
+ * security boundary: the engine itself is sandboxed in lib/duckdb.ts
+ * (READ_ONLY, enable_external_access=false, locked configuration), which is
+ * what stops file/HTTP reads even if a query slips past these checks — e.g.
+ * a query() call whose target SQL is assembled from split strings.
  */
 
 const parser = new Parser();
@@ -133,10 +132,20 @@ function hasExplicitLimit(stmt: AstNode): boolean {
   return !(limit.seperator === "offset" && limit.value.length === 1);
 }
 
+/**
+ * Blanks string literals so the function blocklist only sees SQL, not data.
+ * Without this, a search for '%installment%', '%global%' or '%important%'
+ * was rejected as if it called install/glob/import. Calls such as
+ * read_text('x') are still caught: the function name is outside the quotes.
+ */
+export function blankStringLiterals(sql: string): string {
+  return sql.replace(/'(?:[^']|'')*'/g, "''");
+}
+
 export function guardSql(sqlInput: string): GuardResult {
   const sql = sqlInput.trim().replace(/;+\s*$/g, ""); // tolerate one trailing semicolon
 
-  if (BANNED_PATTERN.test(sql)) {
+  if (BANNED_PATTERN.test(blankStringLiterals(sql))) {
     return {
       ok: false,
       reason:
