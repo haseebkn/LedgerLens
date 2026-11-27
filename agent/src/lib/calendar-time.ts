@@ -35,7 +35,9 @@ function formatLocal(instant: Date, timeZone: string): string {
     hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "longOffset",
   }).formatToParts(instant);
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(p => p.type === type)?.value ?? "";
-  const offset = part("timeZoneName").replace("GMT", "UTC");
+  // ICU versions disagree on a zero offset ("GMT" vs "GMT+00:00", e.g.
+  // Node 22 vs Node 26); normalize so the agent sees one stable form.
+  const offset = part("timeZoneName").replace("GMT", "UTC").replace(/^UTC[+-]00:00$/, "UTC");
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} (${offset}, ${timeZone})`;
 }
 
