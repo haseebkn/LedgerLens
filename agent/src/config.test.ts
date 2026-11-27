@@ -12,6 +12,14 @@ describe("service configuration", () => {
     expect(container.success && container.data.PORT).toBe(9000);
   });
 
+  it("treats an empty ANTHROPIC_BASE_URL as unset and rejects a malformed one", () => {
+    const unset = parseEnv({ ...required, ANTHROPIC_BASE_URL: "" });
+    expect(unset.success && unset.data.ANTHROPIC_BASE_URL).toBeUndefined();
+    const fake = parseEnv({ ...required, ANTHROPIC_BASE_URL: "http://fake-anthropic:9999" });
+    expect(fake.success && fake.data.ANTHROPIC_BASE_URL).toBe("http://fake-anthropic:9999");
+    expect(parseEnv({ ...required, ANTHROPIC_BASE_URL: "not a url" }).success).toBe(false);
+  });
+
   it.each(["0", "-1", "65536", "not-a-port"])("rejects invalid port %s before boot", (PORT) => {
     expect(parseEnv({ ...required, PORT }).success).toBe(false);
   });

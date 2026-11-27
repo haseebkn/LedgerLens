@@ -10,6 +10,9 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().max(65535).default(8787),
   ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required to run the agent loop"),
   AGENT_MODEL: z.string().default("claude-sonnet-5"),
+  // Optional override of the Anthropic API endpoint, for the CI smoke test's
+  // fake model server. Empty means "not set", never "use an empty URL".
+  ANTHROPIC_BASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
 
   // The single user's local zone, used to resolve "today", "last month",
   // and similar relative dates in each request.

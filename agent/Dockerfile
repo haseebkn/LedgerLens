@@ -47,3 +47,14 @@ WORKDIR /repo/agent
 EXPOSE 8787
 USER node
 CMD ["node", "dist/index.js"]
+
+# Demo: the synthetic warehouse from scripts/seed/Dockerfile, baked in
+# read-only, so the image runs with nothing mounted. Needs the `warehouse`
+# build context (see scripts/seed/Dockerfile or docker-compose.yml).
+FROM runtime AS demo
+COPY --from=warehouse /out/financial_engine.db /data/financial_engine.db
+ENV DUCKDB_PATH=/data/financial_engine.db
+
+# Default target (last stage): the image with no data, which mounts or
+# bakes its warehouse at deploy time.
+FROM runtime AS production
