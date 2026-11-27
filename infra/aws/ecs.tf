@@ -77,6 +77,19 @@ resource "aws_ecs_service" "retrieval" {
   service_registries {
     registry_arn = aws_service_discovery_service.retrieval.arn
   }
+
+  # Roll back automatically when a new deployment can't reach a steady state.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # The deploy workflow registers a task-definition revision per commit
+  # (image tagged with its SHA) and deploys it; Terraform must not roll the
+  # service back to its own revision on the next apply.
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 }
 
 # --- agent service (behind ALB at /api/*) -------------------------------
@@ -167,6 +180,19 @@ resource "aws_ecs_service" "agent" {
     container_port   = 8787
   }
 
+  # Roll back automatically when a new deployment can't reach a steady state.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # The deploy workflow registers a task-definition revision per commit
+  # (image tagged with its SHA) and deploys it; Terraform must not roll the
+  # service back to its own revision on the next apply.
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_lb_listener_rule.api, aws_ecs_service.retrieval]
 }
 
@@ -216,6 +242,19 @@ resource "aws_ecs_service" "web" {
     target_group_arn = aws_lb_target_group.web.arn
     container_name   = "web"
     container_port   = 80
+  }
+
+  # Roll back automatically when a new deployment can't reach a steady state.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # The deploy workflow registers a task-definition revision per commit
+  # (image tagged with its SHA) and deploys it; Terraform must not roll the
+  # service back to its own revision on the next apply.
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 
   depends_on = [aws_lb_listener.https]

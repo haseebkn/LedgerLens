@@ -11,6 +11,4 @@ route53_zone_id = ""
 # No secrets here: set them with `aws secretsmanager put-secret-value`
 # after the first apply (see README), so they never enter Terraform state.
 
-agent_image_tag     = "latest"
-web_image_tag       = "latest"
-retrieval_image_tag = "latest"
+# Image tags: leave unset. CI deploys every merge to main by commit SHA.

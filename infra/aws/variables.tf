@@ -16,22 +16,26 @@ variable "environment" {
   default     = "prod"
 }
 
+# Image tags are commit SHAs pushed by .github/workflows/deploy.yml, which
+# also registers and deploys a task-definition revision per commit. These
+# only seed the first revision; "bootstrap" does not exist, so services
+# start healthy only after the first deploy-workflow run (see README).
 variable "agent_image_tag" {
-  description = "Image tag to deploy for the agent service (set by CI after a successful build/push)."
+  description = "Initial image tag for the agent task definition. Later deploys come from CI by commit SHA."
   type        = string
-  default     = "latest"
+  default     = "bootstrap"
 }
 
 variable "web_image_tag" {
-  description = "Image tag to deploy for the web service."
+  description = "Initial image tag for the web task definition."
   type        = string
-  default     = "latest"
+  default     = "bootstrap"
 }
 
 variable "retrieval_image_tag" {
-  description = "Image tag to deploy for the retrieval service."
+  description = "Initial image tag for the retrieval task definition."
   type        = string
-  default     = "latest"
+  default     = "bootstrap"
 }
 
 variable "agent_cpu" {

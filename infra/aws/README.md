@@ -83,30 +83,19 @@ aws secretsmanager put-secret-value --secret-id financial-context/demo-password 
 
 Other accounts are created the same way (`admin-create-user`); there is no self sign-up, and the web app currently offers only "Try the demo".
 
-## Building and pushing images
+## Deploying
 
-```bash
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
+Every merge to `main` that passes CI is deployed by [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml), by commit SHA:
 
-docker build -f agent/Dockerfile -t <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/agent:latest .
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/agent:latest
+1. Builds the images (with `data_source = "baked_demo"`, the seed warehouse first, then the `demo` targets) and pushes them tagged with the SHA only. ECR tags are immutable, so a tag always means the same image.
+2. For retrieval, then agent, then web: downloads the current task definition, which carries Terraform's environment and secrets, swaps in the new image, registers it as a new revision, deploys it and waits for the service to become stable.
+3. Runs [`scripts/smoke/smoke.mjs`](../../scripts/smoke/smoke.mjs) against `APP_URL`: health, readiness, a 401 without sign-in, demo sign-in, and one question that must stream text and carry a citation.
 
-docker build -f web/Dockerfile -t <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/web:latest .
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/web:latest
+Each ECS service has a deployment circuit breaker with rollback: a revision that can't reach a steady state is rolled back to the last one that did. Terraform ignores the services' task definition, so `terraform apply` doesn't undo a deploy.
 
-docker build -f vector_prep/Dockerfile -t <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/retrieval:latest .
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/financial-context/retrieval:latest
-```
+Repository settings: secret `AWS_ROLE_ARN` (OIDC role with ECR push, ECS register/describe/update and `iam:PassRole` on the task and execution roles), variable `DEPLOY_ENABLED=true` once the stack exists (until then merges skip the workflow), variable `APP_URL=https://<domain_name>`, and optionally `DATA_SOURCE` if you changed it in Terraform.
 
-Then force a new deployment so the running services pick up the new image:
-
-```bash
-aws ecs update-service --cluster financial-context-cluster --service financial-context-agent --force-new-deployment
-aws ecs update-service --cluster financial-context-cluster --service financial-context-web --force-new-deployment
-aws ecs update-service --cluster financial-context-cluster --service financial-context-retrieval --force-new-deployment
-```
-
-See [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) for a CI workflow that automates the build/push/redeploy steps on manual dispatch.
+**First deploy.** `terraform apply` creates the services with the placeholder tag `bootstrap`, which doesn't exist, so no task starts yet. Run the workflow once by hand (Actions → Deploy to AWS → Run workflow) to push the first images and deploy them.
 
 ## Cost
 

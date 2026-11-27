@@ -24,7 +24,11 @@ export interface AppOptions {
   limiter: UsageLimiter;
   /** Signs in the shared demo user server-side; absent when no demo user is configured. */
   demoSignIn?: () => Promise<SignInResult>;
+  /** SSE comment interval, so a long tool step never reaches the ALB's 60 s idle timeout. */
+  heartbeatMs?: number;
 }
+
+const DEFAULT_HEARTBEAT_MS = 15_000;
 
 /** Routes anyone may call: liveness, readiness, and how to sign in. */
 const PUBLIC_PATHS = new Set(["/api/health", "/api/ready", "/api/auth/config", "/api/auth/demo"]);
@@ -171,6 +175,11 @@ export function createApp(options: AppOptions) {
       const controller = new AbortController();
       stream.onAbort(() => controller.abort());
       c.req.raw.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+      // SSE comment lines carry no event, so clients ignore them, but they keep
+      // the connection from looking idle to the load balancer.
+      const heartbeat = setInterval(() => {
+        if (!stream.aborted) stream.write(": keepalive\n\n").catch(() => {});
+      }, options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
       try {
         for await (const event of runAgentTurn({ history, userMessage: parsed.data.message, signal: controller.signal })) {
           events.push(event);
@@ -186,6 +195,7 @@ export function createApp(options: AppOptions) {
         events.push(event);
         if (!stream.aborted) await stream.write(toSseFrame(event));
       } finally {
+        clearInterval(heartbeat);
         if (controller.signal.aborted && !events.some((event) => event.type === "done" || (event.type === "error" && event.fatal))) {
           events.push({
             type: "error", traceId: events[0]?.traceId ?? "unknown", fatal: true,

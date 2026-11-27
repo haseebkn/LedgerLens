@@ -234,6 +234,20 @@ describe("sign-in and limits (AUTH_MODE=cognito)", () => {
     expect(await failed.text()).not.toContain("hunter2");
   });
 
+  it("sends SSE keepalive comments while a turn is quiet, and stops when it ends", async () => {
+    mocks.runAgentTurn.mockImplementation(async function* () {
+      yield { type: "text_delta", traceId: "route-test", text: "Thinking" };
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      yield done;
+    });
+    const quiet = createApp({ authMode: "none", limiter: new UsageLimiter(limits), heartbeatMs: 25 });
+    const text = await (await post(quiet)).text();
+    expect(text.match(/^: keepalive$/gm)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // Every data frame still parses: the comments never land inside one.
+    const frames = text.split("\n\n").filter((f) => f.startsWith("data: "));
+    expect(frames.map((f) => JSON.parse(f.slice(6)).type)).toEqual(["text_delta", "done"]);
+  });
+
   it("sets security headers on API responses", async () => {
     const res = await app.request("/api/health");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
