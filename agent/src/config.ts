@@ -60,18 +60,18 @@ const EnvSchema = z.object({
 }).superRefine((value, ctx) => {
   if (value.AUTH_MODE === "cognito") {
     for (const key of ["COGNITO_USER_POOL_ID", "COGNITO_CLIENT_ID"] as const) {
-      if (!value[key]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required when AUTH_MODE=cognito` });
+      if (!value[key]) ctx.addIssue({ code: "custom", path: [key], message: `${key} is required when AUTH_MODE=cognito` });
     }
   }
   if (Boolean(value.DEMO_USERNAME) !== Boolean(value.DEMO_PASSWORD)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DEMO_PASSWORD"], message: "Set both DEMO_USERNAME and DEMO_PASSWORD, or neither" });
+    ctx.addIssue({ code: "custom", path: ["DEMO_PASSWORD"], message: "Set both DEMO_USERNAME and DEMO_PASSWORD, or neither" });
   }
 });
 
 export type Env = z.infer<typeof EnvSchema>;
 
 /** Pure parse — exported separately so tests can exercise validation without process.exit. */
-export function parseEnv(source: NodeJS.ProcessEnv): z.SafeParseReturnType<unknown, Env> {
+export function parseEnv(source: NodeJS.ProcessEnv): z.ZodSafeParseResult<Env> {
   return EnvSchema.safeParse(source);
 }
 

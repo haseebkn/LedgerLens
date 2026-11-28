@@ -129,7 +129,7 @@ financial-context-elt-pipeline/
 ### Prerequisites
 *   **Node.js:** `22.12` or later in the Node 22 release line (or a compatible newer version).
 *   **Python:** `3.11` matches CI and the pinned embedding dependencies.
-*   **GPU Drivers:** CUDA is optional; embedding generation also supports CPU. The default requirements select CUDA wheels; CI uses CPU PyTorch.
+*   **GPU Drivers:** CUDA is optional; embedding generation also supports CPU. `requirements.txt` installs the default PyTorch build; `requirements-gpu.txt` adds the CUDA 12.1 build.
 *   **Docker:** Required for running the local Airflow/Astronomer orchestration.
 
 ### Step 1: Clone the Repository
@@ -146,7 +146,7 @@ python -m venv venv
 # On Linux/macOS:
 source venv/bin/activate
 
-# Install core dependencies and PyTorch configured for CUDA
+# Install core dependencies (use requirements-gpu.txt instead for CUDA PyTorch)
 pip install -r requirements.txt
 ```
 

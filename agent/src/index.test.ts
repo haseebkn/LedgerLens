@@ -189,6 +189,21 @@ describe("sign-in and limits (AUTH_MODE=cognito)", () => {
     expect(mocks.runAgentTurn).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "/api/metrics/", "/api//metrics", "/api/./metrics", "/api/%2e/metrics", "/api/metrics%0A",
+    "/api%0A/metrics", "/api/metrics%E2%80%A8", "/API/metrics", "/api/traces/x%0A", "/api/evals/latest%0A",
+  ])("does not reach a protected handler through the path variant %s", async (path) => {
+    // Router advisories (e.g. wildcard middleware skipped for encoded line
+    // terminators) are about exactly this: keep every variant behind auth.
+    mocks.getMetrics.mockResolvedValue({ leaked: true });
+    mocks.getTraceById.mockResolvedValue({ leaked: true });
+    mocks.getLatestEvalReport.mockReturnValue({ leaked: true });
+    const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
+    const res = await secured.request(path);
+    expect([401, 404]).toContain(res.status);
+    expect(await res.text()).not.toContain("leaked");
+  });
+
   it("leaves health, readiness and sign-in discovery public", async () => {
     mocks.checkReadiness.mockResolvedValue({ ready: true, checks: { warehouse: "ok", retrieval: "ok" } });
     const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
