@@ -6,6 +6,14 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 
   # Remote state in S3 with a DynamoDB lock, configured at init time:
@@ -17,4 +25,11 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+}
+
+# CloudFront requires ACM certificates to live in us-east-1 regardless of
+# where the Lambda function and Cognito user pool run.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
 }

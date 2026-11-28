@@ -286,16 +286,18 @@ If you prefer to run the entire pipeline automatically on a scheduled, orchestra
 
 ## ☁️ AWS Deployment
 
-The agent, retrieval, and web services each have a production `Dockerfile` (`agent/Dockerfile`, `vector_prep/Dockerfile`, `web/Dockerfile`) and are provisioned on AWS via Terraform under [`infra/aws/`](infra/aws): ECS Fargate for all three services, an ALB routing `/api/*` to the agent and everything else to the static frontend, EFS for the shared DuckDB warehouse file and ChromaDB store, Secrets Manager for credentials, and Cloud Map for internal agent → retrieval service discovery.
+LedgerLens deploys on AWS's **Always-Free Serverless** tier (~$0/month even on older AWS accounts with no free-tier credits) via Terraform under [`infra/aws/`](infra/aws): **CloudFront** (free `https://<id>.cloudfront.net` HTTPS URL + security headers), **S3** (static React SPA + SHA-tagged release zips), **AWS Lambda** (Node.js 22 with `RESPONSE_STREAM` Function URL for live SSE streaming, read-only baked DuckDB warehouse, and in-process `RETRIEVAL_MODE=local` search), **Cognito** ("Try the demo" JWT sign-in), and **SSM Parameter Store** (Standard SecureStrings outside Terraform state).
 
 ```bash
-cd infra/aws
-terraform init
-cp terraform.tfvars.example terraform.tfvars   # fill in secrets, don't commit it
+cd infra/aws/bootstrap && terraform init && terraform apply
+cd ..
+cp backend.hcl.example backend.hcl            # fill in state_bucket
+cp terraform.tfvars.example terraform.tfvars  # no secrets — domain_name optional
+terraform init -backend-config=backend.hcl
 terraform apply
 ```
 
-See [`infra/aws/README.md`](infra/aws/README.md) for the architecture diagram, cost estimate, and image build/push steps, and [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) for the manual-dispatch CI workflow that automates them.
+See [`infra/aws/README.md`](infra/aws/README.md) for the architecture diagram, Always-Free cost breakdown, SSM secret setup, and [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) for SHA-tagged deploys with automatic Lambda alias rollback and post-deploy smoke testing.
 
 ---
 

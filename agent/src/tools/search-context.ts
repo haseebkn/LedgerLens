@@ -3,6 +3,7 @@ import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { env } from "../config.js";
 import { queryRowsParams } from "../lib/duckdb.js";
 import { calendarContext } from "../lib/calendar-time.js";
+import { searchLocalContext } from "../lib/local-retrieval.js";
 
 const SearchContextSchema = z
   .object({
@@ -43,31 +44,44 @@ export const searchContextTool = betaZodTool({
     "correctness of aggregation, and will silently miss rows that don't rank in the top results.",
   inputSchema: SearchContextSchema,
   run: async (args) => {
-    const url = new URL("/api/search", env.RETRIEVAL_SERVICE_URL);
-    url.searchParams.set("q", args.query);
-    url.searchParams.set("limit", String(args.limit));
-    if (args.source) url.searchParams.set("source", args.source);
-    if (args.after) url.searchParams.set("after", args.after);
-    if (args.before) url.searchParams.set("before", args.before);
+    let results: RetrievalResult[];
+    if (env.RETRIEVAL_MODE === "local") {
+      results = await searchLocalContext({
+        query: args.query,
+        limit: args.limit,
+        source: args.source,
+        after: args.after,
+        before: args.before,
+      });
+    } else {
+      const url = new URL("/api/search", env.RETRIEVAL_SERVICE_URL);
+      url.searchParams.set("q", args.query);
+      url.searchParams.set("limit", String(args.limit));
+      if (args.source) url.searchParams.set("source", args.source);
+      if (args.after) url.searchParams.set("after", args.after);
+      if (args.before) url.searchParams.set("before", args.before);
 
-    const response = await fetch(url, {
-      headers: { "X-Internal-Token": env.RETRIEVAL_SERVICE_TOKEN },
-      signal: AbortSignal.timeout(30_000),
-    });
+      const response = await fetch(url, {
+        headers: { "X-Internal-Token": env.RETRIEVAL_SERVICE_TOKEN ?? "" },
+        signal: AbortSignal.timeout(30_000),
+      });
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`search_context failed: retrieval service returned ${response.status}. ${body}`.trim());
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`search_context failed: retrieval service returned ${response.status}. ${body}`.trim());
+      }
+
+      const data = (await response.json()) as { query: string; results: RetrievalResult[] };
+      results = data.results;
     }
 
-    const data = (await response.json()) as { query: string; results: RetrievalResult[] };
-    if (data.results.length === 0) {
+    if (results.length === 0) {
       return `No results found for "${args.query}". The warehouse may not have data matching this query — say so rather than guessing.`;
     }
 
     // Hydrate times from the current warehouse, not possibly stale vector text.
     // Formatting in code avoids asking the model to calculate DST/half-hour offsets.
-    const calendarIds = data.results.filter(r => r.source === "calendar").map(r => r.row_id);
+    const calendarIds = results.filter(r => r.source === "calendar").map(r => r.row_id);
     const calendarRows = calendarIds.length === 0 ? [] : await queryRowsParams(
       `SELECT row_id, raw_payload FROM main_analytics.fct_context_rows WHERE source = 'calendar' AND row_id IN (${calendarIds.map((_, i) => `$${i + 1}`).join(", ")})`,
       calendarIds,
@@ -77,7 +91,7 @@ export const searchContextTool = betaZodTool({
     ]));
 
     return JSON.stringify(
-      data.results.map((r) => {
+      results.map((r) => {
         const calendar = r.source === "calendar"
           ? calendarContext(calendarPayloads.get(r.row_id) ?? {}, env.USER_TIME_ZONE)
           : undefined;

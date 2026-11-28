@@ -36,6 +36,10 @@ export async function checkWarehouse(): Promise<CheckResult> {
 }
 
 export async function checkRetrieval(fetchImpl: typeof fetch = fetch): Promise<CheckResult> {
+  if (env.RETRIEVAL_MODE === "local") {
+    // In-process search reads directly from the warehouse's context mart.
+    return checkWarehouse();
+  }
   try {
     const response = await fetchImpl(new URL("/health", env.RETRIEVAL_SERVICE_URL), {
       signal: AbortSignal.timeout(TIMEOUT_MS),

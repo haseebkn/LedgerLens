@@ -1,5 +1,5 @@
 variable "aws_region" {
-  description = "AWS region to deploy into."
+  description = "AWS region for Lambda, Cognito, S3, and SSM Parameter Store."
   type        = string
   default     = "us-east-1"
 }
@@ -16,91 +16,40 @@ variable "environment" {
   default     = "prod"
 }
 
-# Image tags are commit SHAs pushed by .github/workflows/deploy.yml, which
-# also registers and deploys a task-definition revision per commit. These
-# only seed the first revision; "bootstrap" does not exist, so services
-# start healthy only after the first deploy-workflow run (see README).
-variable "agent_image_tag" {
-  description = "Initial image tag for the agent task definition. Later deploys come from CI by commit SHA."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "web_image_tag" {
-  description = "Initial image tag for the web task definition."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "retrieval_image_tag" {
-  description = "Initial image tag for the retrieval task definition."
-  type        = string
-  default     = "bootstrap"
-}
-
-variable "agent_cpu" {
-  description = "Fargate task CPU units for the agent service."
-  type        = number
-  default     = 512
-}
-
-variable "agent_memory" {
-  description = "Fargate task memory (MiB) for the agent service."
-  type        = number
-  default     = 1024
-}
-
-variable "retrieval_cpu" {
-  description = "Fargate task CPU units for the retrieval service — sentence-transformers on CPU wants more headroom than the agent."
-  type        = number
-  default     = 1024
-}
-
-variable "retrieval_memory" {
-  description = "Fargate task memory (MiB) for the retrieval service."
-  type        = number
-  default     = 3072
-}
-
-variable "web_cpu" {
-  description = "Fargate task CPU units for the static web frontend."
-  type        = number
-  default     = 256
-}
-
-variable "web_memory" {
-  description = "Fargate task memory (MiB) for the static web frontend."
-  type        = number
-  default     = 512
-}
-
 variable "domain_name" {
-  description = "Hostname the app is served on, e.g. ledgerlens.example.com. Required: the ALB serves HTTPS only, with an ACM certificate for this name."
-  type        = string
-}
-
-variable "route53_zone_id" {
-  description = "Route 53 hosted zone that contains domain_name. When set, Terraform creates the certificate's validation record and the alias record. Leave empty to add both DNS records yourself (see README)."
+  description = "Optional custom hostname (e.g. ledgerlens.example.com). Leave empty to use CloudFront's built-in free HTTPS URL (*.cloudfront.net) with no domain purchase or ACM setup."
   type        = string
   default     = ""
 }
 
+variable "route53_zone_id" {
+  description = "Optional Route 53 hosted zone for domain_name. When set, Terraform creates the ACM validation record and CloudFront alias record. Leave empty to add DNS records at your registrar (or omit domain_name entirely)."
+  type        = string
+  default     = ""
+}
+
+variable "agent_model" {
+  description = "Anthropic model ID used by the Lambda agent."
+  type        = string
+  default     = "claude-sonnet-5"
+}
+
+variable "lambda_memory_mb" {
+  description = "Memory (MiB) for the Node.js 22 agent Lambda. 1024 MiB gives fast CPU/cold starts while staying inside AWS Lambda's Always Free 400,000 GB-seconds/month."
+  type        = number
+  default     = 1024
+}
+
+variable "lambda_timeout_seconds" {
+  description = "Maximum streaming turn duration (seconds) for the agent Lambda."
+  type        = number
+  default     = 120
+}
+
 variable "demo_username" {
-  description = "Cognito username of the shared \"Try the demo\" account. Create the user and set its password outside Terraform (see README), so the password never enters state."
+  description = "Cognito username of the shared \"Try the demo\" account. Create the user and store its password in SSM outside Terraform (see README)."
   type        = string
   default     = "demo"
-}
-
-variable "waf_requests_per_5_minutes" {
-  description = "Per-IP request limit across the whole site, per 5-minute window, enforced by the ALB's WAF."
-  type        = number
-  default     = 600
-}
-
-variable "waf_demo_signins_per_5_minutes" {
-  description = "Per-IP limit on POST /api/auth/demo, per 5-minute window."
-  type        = number
-  default     = 20
 }
 
 variable "turns_per_hour" {
@@ -110,7 +59,7 @@ variable "turns_per_hour" {
 }
 
 variable "user_tokens_per_day" {
-  description = "Model tokens (input, output and cache) each user may use per UTC day."
+  description = "Model tokens (input, output, and cache) each user may use per UTC day."
   type        = number
   default     = 300000
 }
@@ -121,13 +70,20 @@ variable "global_tokens_per_day" {
   default     = 3000000
 }
 
-variable "data_source" {
-  description = "\"baked_demo\" (default): run the images' demo targets, which carry the synthetic warehouse and vector store; no EFS. \"efs\": run the default targets and mount both from EFS, which you must load yourself."
+variable "github_repo" {
+  description = "Optional GitHub repository (owner/name, e.g. haseebkn/LedgerLens). When set, Terraform creates a least-privilege IAM role that GitHub Actions assumes via OIDC to deploy main."
   type        = string
-  default     = "baked_demo"
+  default     = ""
+}
 
-  validation {
-    condition     = contains(["baked_demo", "efs"], var.data_source)
-    error_message = "data_source must be \"baked_demo\" or \"efs\"."
-  }
+variable "create_github_oidc_provider" {
+  description = "Set true only if your AWS account does not already have the token.actions.githubusercontent.com IAM OIDC provider."
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Optional ARN of an existing GitHub OIDC provider in this AWS account. Defaults to arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com."
+  type        = string
+  default     = ""
 }

@@ -32,4 +32,18 @@ describe("readiness checks", () => {
     expect(await checkReadiness()).toEqual({ ready: false, checks: { warehouse: "ok", retrieval: "failed" } });
     vi.unstubAllGlobals();
   });
+
+  it("verifies retrieval against the warehouse without HTTP in local retrieval mode", async () => {
+    const { env } = await import("../config.js");
+    const prev = env.RETRIEVAL_MODE;
+    (env as { RETRIEVAL_MODE: "http" | "local" }).RETRIEVAL_MODE = "local";
+    try {
+      mocks.queryRows.mockResolvedValue([{ row_id: "plaid_1" }]);
+      const fetchSpy = vi.fn();
+      expect(await checkRetrieval(fetchSpy as unknown as typeof fetch)).toBe("ok");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      (env as { RETRIEVAL_MODE: "http" | "local" }).RETRIEVAL_MODE = prev;
+    }
+  });
 });

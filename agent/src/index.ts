@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import { serve } from "@hono/node-server";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
 import { env } from "./config.js";
@@ -26,6 +27,14 @@ export interface AppOptions {
   demoSignIn?: () => Promise<SignInResult>;
   /** SSE comment interval, so a long tool step never reaches the ALB's 60 s idle timeout. */
   heartbeatMs?: number;
+  /** Shared CloudFront custom header (X-Origin-Verify) blocking direct Lambda Function URL access. */
+  originVerifySecret?: string;
+}
+
+function equalSecret(provided: string, expected: string): boolean {
+  const a = createHash("sha256").update(provided).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
 }
 
 const DEFAULT_HEARTBEAT_MS = 15_000;
@@ -59,6 +68,20 @@ export function createApp(options: AppOptions) {
 
   // nosniff, frame denial, no referrer leakage, etc. on every API response.
   app.use("*", secureHeaders());
+
+  // When deployed behind CloudFront + Lambda Function URL, require CloudFront's
+  // custom origin header on every route so callers cannot invoke the Function URL
+  // directly and bypass CloudFront.
+  if (options.originVerifySecret) {
+    const expected = options.originVerifySecret;
+    app.use("*", async (c, next) => {
+      const provided = c.req.header("X-Origin-Verify") ?? "";
+      if (!equalSecret(provided, expected)) {
+        return c.json({ error: "Forbidden" }, 403);
+      }
+      return next();
+    });
+  }
 
   // Liveness only: no I/O, so it is safe as the load balancer's health check.
   // A fresh deploy with no traces table must still go healthy.
@@ -240,6 +263,7 @@ function optionsFromEnv(): AppOptions {
           ...demo,
         })
       : undefined,
+    originVerifySecret: env.ORIGIN_VERIFY_SECRET,
   };
 }
 

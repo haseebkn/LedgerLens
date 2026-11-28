@@ -34,9 +34,16 @@ const EnvSchema = z.object({
   // Path to the DuckDB warehouse file, relative to the repo root.
   DUCKDB_PATH: z.string().default("../financial_engine.db"),
 
-  // The internal retrieval service (Python/FastAPI, vector_prep/retrieval_service.py).
+  // Retrieval backend: "http" calls the Python ChromaDB/sentence-transformers
+  // service; "local" searches main_analytics.fct_context_rows in-process so
+  // AWS Lambda can serve the demo without a 3 GiB Python container.
+  RETRIEVAL_MODE: z.enum(["http", "local"]).default("http"),
   RETRIEVAL_SERVICE_URL: z.string().url().default("http://127.0.0.1:8100"),
-  RETRIEVAL_SERVICE_TOKEN: z.string().min(1, "RETRIEVAL_SERVICE_TOKEN is required to call the retrieval service"),
+  RETRIEVAL_SERVICE_TOKEN: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+
+  // Shared header secret injected by CloudFront (X-Origin-Verify) so callers
+  // cannot bypass CloudFront and invoke the Lambda Function URL directly.
+  ORIGIN_VERIFY_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
 
   // Agent loop bounds.
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(8),
@@ -58,6 +65,13 @@ const EnvSchema = z.object({
   USER_TOKENS_PER_DAY: z.coerce.number().int().positive().default(300_000),
   GLOBAL_TOKENS_PER_DAY: z.coerce.number().int().positive().default(3_000_000),
 }).superRefine((value, ctx) => {
+  if (value.RETRIEVAL_MODE === "http" && !value.RETRIEVAL_SERVICE_TOKEN) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["RETRIEVAL_SERVICE_TOKEN"],
+      message: "RETRIEVAL_SERVICE_TOKEN is required when RETRIEVAL_MODE=http",
+    });
+  }
   if (value.AUTH_MODE === "cognito") {
     for (const key of ["COGNITO_USER_POOL_ID", "COGNITO_CLIENT_ID"] as const) {
       if (!value[key]) ctx.addIssue({ code: "custom", path: [key], message: `${key} is required when AUTH_MODE=cognito` });

@@ -94,6 +94,14 @@ jobs:
         working-directory: agent
         run: npm run build
 
+      - name: Lambda bundle packaging check (serverless deploy path)
+        run: |
+          node scripts/package-lambda.mjs \
+            --warehouse financial_engine.db \
+            --node-modules node_modules \
+            --out /tmp/ci-lambda-bundle
+          rm -rf /tmp/ci-lambda-bundle
+
       - name: Web typecheck
         working-directory: web
         run: npm run typecheck

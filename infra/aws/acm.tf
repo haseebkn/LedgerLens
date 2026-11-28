@@ -1,14 +1,15 @@
-# TLS for the public ALB. The certificate is validated by DNS: with
-# route53_zone_id set, Terraform writes the validation record and waits;
-# without it, `terraform apply` prints the record to add at your DNS
-# provider (output certificate_validation_records) and waits until the
-# certificate is issued.
+# Optional TLS certificate for a custom domain on CloudFront. When domain_name
+# is empty (the default), none of these resources are created and the app is
+# served over HTTPS on CloudFront's built-in https://<id>.cloudfront.net URL.
 
 locals {
-  manage_dns = var.route53_zone_id != ""
+  has_custom_domain = var.domain_name != ""
+  manage_dns        = local.has_custom_domain && var.route53_zone_id != ""
 }
 
 resource "aws_acm_certificate" "app" {
+  count             = local.has_custom_domain ? 1 : 0
+  provider          = aws.us_east_1
   domain_name       = var.domain_name
   validation_method = "DNS"
 
@@ -19,7 +20,7 @@ resource "aws_acm_certificate" "app" {
 
 resource "aws_route53_record" "certificate_validation" {
   for_each = local.manage_dns ? {
-    for option in aws_acm_certificate.app.domain_validation_options : option.domain_name => option
+    for option in aws_acm_certificate.app[0].domain_validation_options : option.domain_name => option
   } : {}
 
   zone_id         = var.route53_zone_id
@@ -31,7 +32,9 @@ resource "aws_route53_record" "certificate_validation" {
 }
 
 resource "aws_acm_certificate_validation" "app" {
-  certificate_arn         = aws_acm_certificate.app.arn
+  count                   = local.has_custom_domain ? 1 : 0
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.app[0].arn
   validation_record_fqdns = local.manage_dns ? [for record in aws_route53_record.certificate_validation : record.fqdn] : null
 }
 
@@ -43,8 +46,8 @@ resource "aws_route53_record" "app" {
   type    = "A"
 
   alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
   }
 }

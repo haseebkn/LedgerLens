@@ -268,4 +268,11 @@ describe("sign-in and limits (AUTH_MODE=cognito)", () => {
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
   });
+
+  it("rejects direct requests missing or mismatching X-Origin-Verify when configured", async () => {
+    const fronted = createApp({ authMode: "none", limiter: new UsageLimiter(limits), originVerifySecret: "cf-secret-123" });
+    expect((await fronted.request("/api/health")).status).toBe(403);
+    expect((await fronted.request("/api/health", { headers: { "X-Origin-Verify": "wrong" } })).status).toBe(403);
+    expect((await fronted.request("/api/health", { headers: { "X-Origin-Verify": "cf-secret-123" } })).status).toBe(200);
+  });
 });

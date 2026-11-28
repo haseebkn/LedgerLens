@@ -1,110 +1,121 @@
-# AWS Deployment (Terraform)
+# AWS Deployment — Always-Free Serverless (Terraform)
 
-Deploys the three containers built by [`agent/Dockerfile`](../../agent/Dockerfile), [`web/Dockerfile`](../../web/Dockerfile), and [`vector_prep/Dockerfile`](../../vector_prep/Dockerfile) onto ECS Fargate, behind one public ALB.
+Deploys LedgerLens on AWS at **~$0/month permanently**, even on an older AWS account with no free-tier credits, using AWS's **Always Free** serverless services.
 
 ## Architecture
 
-```
-Internet
+```text
+Internet (HTTPS — free https://<id>.cloudfront.net URL, or optional custom domain)
    │
    ▼
-ALB (HTTPS 443 with ACM certificate; port 80 redirects; WAF rate limits)
-   ├── /api/*  ──▶  agent Fargate service (port 8787) ──▶  retrieval Fargate service (port 8100, internal-only via Cloud Map)
-   └── /*      ──▶  web Fargate service (nginx, port 80)
-
-Data, by default baked into the images' demo targets (data_source = "baked_demo"):
-   agent      ──▶  /data/financial_engine.db   (synthetic warehouse, read-only DuckDB)
-   retrieval  ──▶  /repo/vector_store          (ChromaDB store embedded at build time)
-With data_source = "efs", both paths are EFS access points instead (agent read-only).
+Amazon CloudFront (Always Free: 1 TB/mo + 10M reqs/mo + security headers policy)
+   ├── /api/*  ──▶  AWS Lambda Function URL (Node.js 22, RESPONSE_STREAM for real SSE)
+   │                   ├── X-Origin-Verify header check (blocks direct Function URL calls)
+   │                   ├── Cognito JWT verification + per-user / daily limits
+   │                   ├── Read-only DuckDB synthetic warehouse (/var/task/data/financial_engine.db)
+   │                   ├── In-process Node search (RETRIEVAL_MODE=local — no 3 GiB Python container)
+   │                   └── Cold-start secret fetch from SSM Parameter Store (Standard SecureStrings)
+   └── /*      ──▶  Private S3 bucket via CloudFront OAC (+ SPA rewrite CloudFront Function)
 ```
 
-- **No NAT gateway.** Fargate tasks run in public subnets with public IPs and security-group-restricted ingress, saving the ~$32/mo a NAT gateway would cost. This is a reasonable trade for a single-service portfolio deploy — not a pattern to copy for a workload handling real financial data.
-- **No RDS yet.** The warehouse is a DuckDB file, baked into the demo image or on EFS — one writer (dbt, out of band), many readers (the agent's tools). Phase 3 moves serving data to Postgres.
-- **HTTPS only.** The ALB serves `domain_name` with an ACM certificate (TLS 1.2+); port 80 returns a 301 to HTTPS. A WAF on the ALB limits requests per IP, with a tighter limit on the demo sign-in.
-- **Sign-in in the app.** The agent verifies Cognito access tokens on every `/api/*` route except health, readiness and sign-in discovery, and enforces per-user turn and token limits (`agent/src/lib/auth.ts`, `agent/src/lib/usage-limits.ts`).
+### Why serverless instead of ECS Fargate?
+
+An always-on ECS Fargate + ALB + WAF stack costs ~$110/month even with zero traffic. This stack delivers the same security and streaming properties at **~$0/month**:
+
+| Service | Always-Free allowance (works on old AWS accounts) | Estimated monthly cost |
+| :--- | :--- | :--- |
+| **CloudFront** | 1 TB transfer + 10M HTTP/S requests + 2M CloudFront Function invocations + 1,000 invalidations | **$0.00** |
+| **AWS Lambda** | 1M requests + 400,000 GB-seconds (~111 hours/mo at 1024 MiB) | **$0.00** |
+| **Amazon Cognito** | 10,000+ monthly active users | **$0.00** |
+| **SSM Parameter Store** | Standard parameters & API calls | **$0.00** |
+| **CloudWatch Logs** | 5 GB ingestion & archival | **$0.00** |
+| **Amazon S3 + DynamoDB** | Tiny static SPA (~1 MB), SHA Lambda zips (30-day expiry), TF state | **< $0.05** |
+
+Your only real cost is Anthropic API usage from demo visitors, bounded by:
+1. Per-turn working-token cap in the agent loop
+2. Per-user hourly turn limit (`20/hr`) and daily token cap (`300k/day`) + global daily token cap (`3M/day`)
+3. A **monthly spend limit** you set in the Anthropic Console (Settings → Limits) — set this first (e.g. $5/month).
+
+*(Note: in-process rate-limit counters live per warm Lambda container; Phase 3 moves counters, traces, and multi-advisor data to free-tier Neon Postgres + pgvector with row-level security.)*
 
 ## What's deployed vs. what isn't
 
-Terraform here provisions the **serving path**: the agent's chat API, the retrieval service, and the web frontend. It does **not** run the ingestion pipeline (`extract/`), dbt builds, or the embedding backfill (`vector_prep/embed_context.py`). The default deployment needs none of them: it serves the synthetic data baked into the demo images. Serving real data means `data_source = "efs"` and loading `financial_engine.db` and the ChromaDB store onto EFS yourself; that path is not automated, since running live brokerage and bank ingestion from a shared cloud environment is a separate decision.
+* **Deployed:** Static React SPA on S3/CloudFront, Node.js 22 streaming Claude agent on Lambda with the deterministic synthetic DuckDB warehouse baked into each SHA-tagged release zip, public eval reports, Cognito auth + "Try the demo", and in-process retrieval (`RETRIEVAL_MODE=local`).
+* **Not deployed:** The live Plaid/Alpaca/Google Calendar extractors, Airflow DAG, and the 3 GiB Python ChromaDB/PyTorch retrieval container (kept for local `make demo` and data-engineering workflows).
+* **Metrics tab:** Lambda writes turn traces to `/tmp/raw_data` (ephemeral); live deployed metrics arrive in Phase 5 via OpenTelemetry + Postgres.
 
-Agent traces are written to the agent container's own disk (`/repo/raw_data`), so a task replacement discards them and the deployed Metrics tab does not update; Phase 5 replaces file traces with OpenTelemetry export. Public evaluation reports ship in the agent image; private and partial reports are excluded from the Docker build context.
+## One-time AWS Setup
 
-Spend controls, from inside out: a per-turn token budget in the agent loop; per-user limits (default 20 turns per hour and 300k tokens per day); a global 3M tokens per day; the WAF's per-IP limits; and a monthly spend limit you set on the Anthropic workspace that owns the key (Console → Settings → Limits). Set that last one before sharing the URL: it is the only one that holds if everything else is misconfigured. Terraform validation in CI does not establish that this stack has run on AWS.
-
-## Setup
-
-State lives in S3 with a DynamoDB lock. Create both once:
+### 1. Remote Terraform state (S3 + DynamoDB lock)
 
 ```bash
 cd infra/aws/bootstrap
 terraform init && terraform apply          # prints state_bucket and lock_table
 ```
 
-Then, from `infra/aws`:
+### 2. Provision the serverless stack
 
 ```bash
-cp backend.hcl.example backend.hcl            # fill in state_bucket; not committed
-cp terraform.tfvars.example terraform.tfvars  # domain_name etc.; holds no secrets
+cd ../                                     # infra/aws
+cp backend.hcl.example backend.hcl         # fill in state_bucket; gitignored
+cp terraform.tfvars.example terraform.tfvars
+# Review terraform.tfvars:
+# - Leave domain_name = "" to use CloudFront's free https://<id>.cloudfront.net URL.
+# - Set github_repo = "haseebkn/LedgerLens" to auto-create the OIDC deploy role
+#   (set create_github_oidc_provider = true if this AWS account doesn't have GitHub OIDC yet).
 terraform init -backend-config=backend.hcl
 terraform apply
 ```
 
-Secrets are never Terraform variables, so they never enter state. After the first apply, set their values (and the demo password, below):
+### 3. Store secrets in SSM Parameter Store & create the demo Cognito user
 
-```bash
-aws secretsmanager put-secret-value --secret-id financial-context/anthropic-api-key --secret-string "$ANTHROPIC_API_KEY"
-aws secretsmanager put-secret-value --secret-id financial-context/retrieval-service-token --secret-string "$(openssl rand -hex 32)"
-```
-
-Upgrading from a version that took `anthropic_api_key` and `retrieval_service_token` as variables: the `removed` blocks in `secrets.tf` make Terraform forget those secret versions without deleting them. The old local state still contains both values, so rotate them and delete the old state file.
-
-### Data
-
-By default (`data_source = "baked_demo"`) the agent and retrieval services run their images' `demo` targets, which carry the synthetic warehouse and vector store built from `scripts/seed/`. Nothing is mounted and EFS is not created. With `data_source = "efs"` the default targets run and mount EFS instead (the agent read-only); loading data onto it is up to you.
-
-Each service has its own task role. With baked data neither has any AWS permissions; with EFS the agent may only mount its access point read-only and retrieval may write only through its own.
-
-Requires AWS credentials in the environment (`aws configure`, or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) with permissions to create VPC, ECS, ECR, ALB, ACM, WAF, Cognito, IAM, Secrets Manager, Cloud Map and CloudWatch Logs resources (plus EFS with `data_source = "efs"`, and Route 53 records with `route53_zone_id`).
-
-## Domain, sign-in and the demo account
-
-1. **Domain.** Set `domain_name`. If its DNS is a Route 53 hosted zone, also set `route53_zone_id` and Terraform creates the certificate validation and alias records. Otherwise `terraform apply` waits on the certificate: add the record from the `certificate_validation_records` output at your DNS provider, and afterwards point `domain_name` at `alb_dns_name`.
-2. **Secrets.** Terraform creates the demo-password secret without a value, so the password never enters state. Set it, and create the matching Cognito user, before the first deploy (an ECS task can't start with an empty secret):
+Secrets are **never** Terraform variables and never enter Terraform state. Run once after `terraform apply`:
 
 ```bash
 POOL=$(terraform output -raw cognito_user_pool_id)
-DEMO_PASSWORD='<at least 14 characters, upper and lower case and a number>'
+PREFIX=$(terraform output -raw ssm_prefix)          # /financial-context
+DEMO_PASSWORD='<at least 14 characters, upper + lower case + a number>'
+
+# Store ANTHROPIC_API_KEY and DEMO_PASSWORD as Always-Free Standard SecureStrings
+aws ssm put-parameter --name "${PREFIX}/anthropic-api-key" --type SecureString --value "$ANTHROPIC_API_KEY" --overwrite
+aws ssm put-parameter --name "${PREFIX}/demo-password"     --type SecureString --value "$DEMO_PASSWORD"     --overwrite
+
+# Create the shared "Try the demo" user in Cognito
 aws cognito-idp admin-create-user --user-pool-id "$POOL" --username demo --message-action SUPPRESS
 aws cognito-idp admin-set-user-password --user-pool-id "$POOL" --username demo --password "$DEMO_PASSWORD" --permanent
-aws secretsmanager put-secret-value --secret-id financial-context/demo-password --secret-string "$DEMO_PASSWORD"
 ```
 
-3. **Spend limit.** Set a monthly limit on the Anthropic workspace that owns the API key.
+Set a monthly spend limit on your Anthropic workspace in the Anthropic Console before sharing the URL.
 
-Other accounts are created the same way (`admin-create-user`); there is no self sign-up, and the web app currently offers only "Try the demo".
+### 4. Configure GitHub Actions & run the first deploy
 
-## Deploying
+Add these settings under **GitHub → Repository Settings → Secrets and variables → Actions** using `terraform output`:
 
-Every merge to `main` that passes CI is deployed by [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml), by commit SHA:
+* **Secret:** `AWS_ROLE_ARN` = `terraform output -raw github_deploy_role_arn`
+* **Variables:**
+  * `DEPLOY_ENABLED` = `true`
+  * `APP_URL` = `terraform output -raw app_url`
+  * `WEB_BUCKET` = `terraform output -raw web_bucket`
+  * `ARTIFACTS_BUCKET` = `terraform output -raw artifacts_bucket`
+  * `LAMBDA_FUNCTION_NAME` = `terraform output -raw lambda_function_name`
+  * `CLOUDFRONT_DISTRIBUTION_ID` = `terraform output -raw cloudfront_distribution_id`
 
-1. Builds the images (with `data_source = "baked_demo"`, the seed warehouse first, then the `demo` targets) and pushes them tagged with the SHA only. ECR tags are immutable, so a tag always means the same image.
-2. For retrieval, then agent, then web: downloads the current task definition, which carries Terraform's environment and secrets, swaps in the new image, registers it as a new revision, deploys it and waits for the service to become stable.
-3. Runs [`scripts/smoke/smoke.mjs`](../../scripts/smoke/smoke.mjs) against `APP_URL`: health, readiness, a 401 without sign-in, demo sign-in, and one question that must stream text and carry a citation.
+Then trigger **Actions → Deploy to AWS → Run workflow** once (every subsequent merge to `main` that passes CI deploys automatically by commit SHA, with automatic alias rollback if `scripts/smoke/smoke.mjs` fails).
 
-Each ECS service has a deployment circuit breaker with rollback: a revision that can't reach a steady state is rolled back to the last one that did. Terraform ignores the services' task definition, so `terraform apply` doesn't undo a deploy.
+## Optional: Adding a Free Custom Domain Later
 
-Repository settings: secret `AWS_ROLE_ARN` (OIDC role with ECR push, ECS register/describe/update and `iam:PassRole` on the task and execution roles), variable `DEPLOY_ENABLED=true` once the stack exists (until then merges skip the workflow), variable `APP_URL=https://<domain_name>`, and optionally `DATA_SOURCE` if you changed it in Terraform.
+If you later claim a free domain (e.g. via the GitHub Student Developer Pack or a free subdomain provider supporting CNAME records):
 
-**First deploy.** `terraform apply` creates the services with the placeholder tag `bootstrap`, which doesn't exist, so no task starts yet. Run the workflow once by hand (Actions → Deploy to AWS → Run workflow) to push the first images and deploy them.
+1. Set `domain_name = "ledgerlens.yourdomain.me"` in `terraform.tfvars` and run `terraform apply`.
+2. Add the DNS validation CNAME printed by `terraform output certificate_validation_records` at your DNS registrar (ACM issues the cert in `us-east-1` automatically).
+3. Point `domain_name` (CNAME) at `terraform output -raw cloudfront_domain_name`.
+4. Update the GitHub `APP_URL` variable to `https://ledgerlens.yourdomain.me`.
 
-## Cost
-
-At the default sizing, the three tasks reserve 1.75 vCPU and 4.5 GiB total. Using 730 hours/month and US East (N. Virginia) Linux/x86 on-demand rates, compute is about **$66.32/month**. The ALB base adds **$16.43**, and five public IPv4 addresses (three tasks plus an assumed two ALB nodes) add **$18.25**. That is roughly **$101/month before** storage, logs, secrets, traffic, taxes, and Anthropic usage. This is an estimate, not a bill; verify the region and actual resources before deployment. Sources: [Fargate](https://aws.amazon.com/fargate/pricing/), [ALB](https://aws.amazon.com/elasticloadbalancing/pricing/), [public IPv4](https://aws.amazon.com/vpc/pricing/).
-
-Scaling tasks to zero does not remove the ALB or its IPv4 charges. A target near $5/month requires a different hosting design, usually a backend that sleeps when idle; that migration is not implemented in this Terraform stack.
-
-## Tearing down
+## Tearing Down
 
 ```bash
+# Empty the S3 buckets first, then destroy the stack
+aws s3 rm "s3://$(terraform output -raw web_bucket)" --recursive
+aws s3 rm "s3://$(terraform output -raw artifacts_bucket)" --recursive
 terraform destroy
 ```

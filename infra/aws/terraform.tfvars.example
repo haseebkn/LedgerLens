@@ -2,13 +2,15 @@ aws_region   = "us-east-1"
 project_name = "financial-context"
 environment  = "prod"
 
-# Required: the app is served over HTTPS on this name.
-domain_name = "ledgerlens.example.com"
-# Optional: the Route 53 hosted zone for domain_name. Leave empty to add the
-# DNS records yourself (see README).
+# Optional custom domain. Leave empty to use CloudFront's built-in free
+# https://<id>.cloudfront.net URL (no domain purchase or ACM cert needed).
+domain_name     = ""
 route53_zone_id = ""
 
-# No secrets here: set them with `aws secretsmanager put-secret-value`
-# after the first apply (see README), so they never enter Terraform state.
+# Optional: set to your GitHub repo to auto-create the least-privilege OIDC
+# deploy role for .github/workflows/deploy.yml.
+github_repo                 = "haseebkn/LedgerLens"
+create_github_oidc_provider = false
 
-# Image tags: leave unset. CI deploys every merge to main by commit SHA.
+# No secrets here: store ANTHROPIC_API_KEY and DEMO_PASSWORD in SSM Parameter
+# Store (Always Free Standard SecureStrings) via AWS CLI after `terraform apply`.
