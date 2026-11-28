@@ -118,6 +118,59 @@ jobs:
         working-directory: web
         run: npm run build
 
+  # Real Postgres 16 + pgvector + Row-Level Security verification for Phase 3:
+  # generates the 60-household synthetic advisor book, runs SQL migrations,
+  # seeds under per-advisor RLS transactions, and verifies cross-tenant
+  # isolation, view-only SQL tool permissions, append-only audit_log, and
+  # hybrid pgvector + tsvector search.
+  postgres-rls:
+    name: Postgres + pgvector + RLS integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_postgres_password
+          POSTGRES_DB: ledgerlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d ledgerlens"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate deterministic synthetic advisor book
+        run: python scripts/seed/generate_advisor_book.py --out .demo/advisor_book/book.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Run Postgres + pgvector + RLS integration tests
+        working-directory: agent
+        env:
+          ANTHROPIC_API_KEY: sk-ant-ci-placeholder-not-a-real-key
+          RETRIEVAL_MODE: local
+          DATABASE_URL: postgres://postgres:ci_postgres_password@127.0.0.1:5432/ledgerlens
+          DB_APP_ROLE: ledgerlens_app
+          DB_RO_ROLE: ledgerlens_ro
+          ADVISOR_BOOK_PATH: ../.demo/advisor_book/book.json
+        run: npx vitest run src/db/rls.integration.test.ts
+
   # Builds and runs the images that ship (the compose demo stack, with the
   # seed warehouse baked in) against a fake Anthropic API, then checks what a
   # user would hit: health, readiness, a streamed and cited answer through the
