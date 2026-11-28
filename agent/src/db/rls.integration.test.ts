@@ -6,6 +6,21 @@ import { closePool, createPool, withTenantContext } from "./client.js";
 import { runMigrations } from "./migrate.js";
 import { seedAdvisorBook, type AdvisorBookData } from "./seed.js";
 import { searchAdvisorNotes } from "./advisor-repo.js";
+import {
+  findClients,
+  getAdvisorRowById,
+  getClientActivity,
+  getClientProfile,
+  preparePortfolioReview,
+  queryAdvisorWarehouse,
+} from "../advisor/queries.js";
+import {
+  createProposal,
+  decideProposal,
+  listAuditLog,
+  listProposals,
+  ProposalConflictError,
+} from "../advisor/proposals.js";
 
 /**
  * Real Postgres + pgvector + Row-Level Security integration suite.
@@ -181,5 +196,114 @@ describe.skipIf(!CAN_RUN)("Postgres + pgvector + Row-Level Security (integration
     // Marcus finds his own client's note & email.
     const marcusHits = await searchAdvisorNotes(pool, MARCUS, { query: "Halifax commercial property", limit: 5 });
     expect(marcusHits.some((h) => h.docId === "note_marcus_owen" || h.docId === "email_marcus_owen")).toBe(true);
+  });
+
+  it("executes all Phase 3.2 advisor tools deterministically under RLS", async () => {
+    // 1. find_clients: MSFT holders without a review in 6 months (Sarah only; never Marcus's Owen Gallagher)
+    const msftOverdue = await findClients(pool, SARAH, { holding: "MSFT", lastReviewBefore: "2026-05-30" });
+    expect(msftOverdue.result_id).toMatch(/^computed_clients_/);
+    expect(msftOverdue.client_count).toBeGreaterThanOrEqual(5);
+    expect(msftOverdue.clients.some((c) => c.household_id === "hh_priya_nair")).toBe(true);
+    expect(msftOverdue.clients.some((c) => c.household_id === "hh_chen_family")).toBe(true);
+    expect(msftOverdue.clients.some((c) => c.household_id === "hh_marcus_anchor")).toBe(false);
+
+    // 2. get_client_profile: Priya across two custodians; Owen invisible to Sarah
+    const priyaProfile = await getClientProfile(pool, SARAH, "Priya Nair");
+    expect(priyaProfile?.household.multi_custodian).toBe(true);
+    expect(priyaProfile?.household.custodians).toEqual(["Harbour Clearing", "Northstar Custody"]);
+    expect(priyaProfile?.open_tasks.length).toBeGreaterThanOrEqual(2);
+    expect(await getClientProfile(pool, SARAH, "Owen Gallagher")).toBeNull();
+
+    // 3. get_client_activity: tested sign convention (Oct +$7,500; Sep +$4,000 - $1,000 = +$3,000)
+    const oct = await getClientActivity(pool, SARAH, { clientId: "hh_priya_nair", start: "2026-10-01", end: "2026-11-01" });
+    expect(oct?.totals.contributions).toBe(7500);
+    expect(oct?.totals.withdrawals).toBe(0);
+    expect(oct?.totals.net_flows).toBe(7500);
+
+    const sep = await getClientActivity(pool, SARAH, { clientId: "hh_priya_nair", start: "2026-09-01", end: "2026-10-01" });
+    expect(sep?.totals.contributions).toBe(4000);
+    expect(sep?.totals.withdrawals).toBe(-1000);
+    expect(sep?.totals.net_flows).toBe(3000);
+
+    // 4. prepare_portfolio_review: deterministic allocation vs target, drift, AUM & YTD
+    const review = await preparePortfolioReview(pool, SARAH, "Priya Nair");
+    expect(review?.result_id).toMatch(/^computed_review_/);
+    expect(review?.accounts).toHaveLength(3);
+    expect(review?.total_aum).toBeGreaterThan(200_000);
+    expect(
+      review!.allocation.actual.equity_pct +
+        review!.allocation.actual.fixed_income_pct +
+        review!.allocation.actual.cash_pct,
+    ).toBeCloseTo(100, 0);
+    expect(review?.holdings.some((h) => h.symbol === "MSFT")).toBe(true);
+
+    // 5. query_warehouse over allowlisted views + RLS-scoped source drawer row lookup
+    const wh = await queryAdvisorWarehouse(pool, SARAH, "SELECT COUNT(*)::int AS n FROM v_households");
+    expect(wh.rows[0]?.["n"]).toBe(36);
+    expect((await getAdvisorRowById(pool, SARAH, "note_chen_tuition"))?.source).toBe("meeting_note");
+    expect(await getAdvisorRowById(pool, SARAH, "hh_marcus_anchor")).toBeNull();
+  });
+
+  it("enforces approval-before-writes and records an append-only audit trail (Plan 3.3)", async () => {
+    // Creating a CRM update proposal must NOT modify households until approved.
+    const prop = await createProposal(pool, SARAH, {
+      clientId: "hh_priya_nair",
+      kind: "crm_update",
+      summary: "Update Priya Nair's stale mailing address",
+      after: { address: "12 Water St, St. John's, NL A1C 1A1" },
+      sources: ["note_priya_move", "email_priya_move"],
+      model: "claude-sonnet-5",
+      traceId: "trace_plan33_crm",
+    });
+    expect(prop.status).toBe("pending");
+    expect(prop.before["address"]).toContain("48 Duckworth St");
+
+    const beforeApproval = await getClientProfile(pool, SARAH, "hh_priya_nair");
+    expect(beforeApproval?.household.address).toContain("48 Duckworth St");
+
+    // Marcus cannot see or approve Sarah's proposal (RLS).
+    expect((await listProposals(pool, MARCUS)).some((p) => p.proposalId === prop.proposalId)).toBe(false);
+
+    // Approving (with an optional edit) applies the change & appends to audit_log.
+    const approved = await decideProposal(pool, SARAH, {
+      proposalId: prop.proposalId,
+      decision: "approve",
+      editedAfter: { address: "12 Water St, Suite 2, St. John's, NL A1C 1A1" },
+      actorId: "adv_sarah",
+    });
+    expect(approved.proposal.status).toBe("approved");
+    expect(approved.auditEntry.action).toBe("crm_update_approved");
+    expect(approved.auditEntry.targetTable).toBe("households");
+    expect(approved.auditEntry.sources).toEqual(["note_priya_move", "email_priya_move"]);
+
+    const afterApproval = await getClientProfile(pool, SARAH, "hh_priya_nair");
+    expect(afterApproval?.household.address).toBe("12 Water St, Suite 2, St. John's, NL A1C 1A1");
+
+    // Double-approval is rejected with ProposalConflictError.
+    await expect(
+      decideProposal(pool, SARAH, { proposalId: prop.proposalId, decision: "approve", actorId: "adv_sarah" }),
+    ).rejects.toBeInstanceOf(ProposalConflictError);
+
+    // Rejecting a task proposal leaves tasks unchanged and logs rejection.
+    const taskProp = await createProposal(pool, SARAH, {
+      clientId: "hh_chen_family",
+      kind: "create_task",
+      summary: "Schedule RESP drawdown call",
+      after: { title: "Schedule RESP drawdown call", priority: "high", due_date: "2026-12-15" },
+      sources: ["note_chen_tuition"],
+      model: "claude-sonnet-5",
+      traceId: "trace_plan33_task",
+    });
+    const rejected = await decideProposal(pool, SARAH, {
+      proposalId: taskProp.proposalId,
+      decision: "reject",
+      actorId: "adv_sarah",
+    });
+    expect(rejected.proposal.status).toBe("rejected");
+    expect(rejected.auditEntry.action).toBe("create_task_rejected");
+
+    const audit = await listAuditLog(pool, SARAH, 20);
+    expect(audit.some((a) => a.auditId === approved.auditEntry.auditId)).toBe(true);
+    expect(audit.some((a) => a.auditId === rejected.auditEntry.auditId)).toBe(true);
   });
 });

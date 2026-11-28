@@ -77,6 +77,13 @@ function drawerTitle(rowId: string): string {
   if (source === "Plaid") return "Plaid transaction";
   if (source === "Calendar") return "Calendar event";
   if (source === "Alpaca") return "Alpaca order";
+  if (source === "Client") return "Client household";
+  if (source === "Account") return "Custodian account";
+  if (source === "Transaction") return "Account transaction";
+  if (source === "Meeting Note") return "Meeting transcript";
+  if (source === "Email") return "Client email";
+  if (source === "Task") return "Advisor task";
+  if (source === "Proposal") return "Action proposal";
   return "Source record";
 }
 

@@ -19,7 +19,8 @@
  * Not checked: percentages, dates, and counts of other nouns.
  */
 
-const ROW_ID_PATTERN = /^(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+$/;
+const ROW_ID_PATTERN =
+  /^(?:calendar|plaid|alpaca|computed|hh|acct|pos|txn|note|email|evt|task|prop)_[a-zA-Z0-9_-]+$/;
 const CITATION_PATTERN = /\[([a-zA-Z0-9_-]+)\](?!\()/g;
 // $1,234.56 · -$12 · $ 40.00 · $1.2k is not matched (no shorthand in answers).
 const DOLLAR_PATTERN = /-?\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\$\s?\d+(?:\.\d+)?/g;
@@ -94,7 +95,10 @@ export function extractEvidence(toolResultText: string, evidence: Evidence = new
     const record = value as Record<string, unknown>;
     const scope = new Set<number>();
     numbersIn(record, scope);
-    for (const key of ["row_id", "result_id"] as const) {
+    for (const key of [
+      "row_id", "result_id", "household_id", "account_id", "position_id",
+      "transaction_id", "note_id", "email_id", "event_id", "task_id", "proposal_id", "doc_id",
+    ] as const) {
       const id = record[key];
       if (typeof id === "string" && ROW_ID_PATTERN.test(id)) {
         addEvidence(evidence, id, key === "result_id" ? allNumbers(parsed) : scope);

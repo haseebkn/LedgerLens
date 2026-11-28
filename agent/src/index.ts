@@ -17,6 +17,18 @@ import { getRowById, ROW_ID_FORMAT } from "./lib/rows.js";
 import { checkReadiness } from "./lib/readiness.js";
 import { cognitoSignIn, cognitoVerifier, requireAuth, type AuthVariables, type SignInResult, type VerifyToken } from "./lib/auth.js";
 import { UsageLimiter } from "./lib/usage-limits.js";
+import { createPool } from "./db/client.js";
+import { resolveAdvisorSession } from "./advisor/tenant.js";
+import { getAdvisorRowById } from "./advisor/queries.js";
+import {
+  decideProposal,
+  listAuditLog,
+  listProposals,
+  ProposalConflictError,
+  ProposalNotFoundError,
+  type ProposalStatus,
+} from "./advisor/proposals.js";
+import type { Pool } from "pg";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
 export interface AppOptions {
@@ -29,6 +41,8 @@ export interface AppOptions {
   heartbeatMs?: number;
   /** Shared CloudFront custom header (X-Origin-Verify) blocking direct Lambda Function URL access. */
   originVerifySecret?: string;
+  /** Optional Postgres pool enabling Phase 3 multi-advisor mode with RLS, proposals & audit log. */
+  advisorPool?: Pool;
 }
 
 function equalSecret(provided: string, expected: string): boolean {
@@ -146,14 +160,18 @@ export function createApp(options: AppOptions) {
     }
   });
 
-  // Opens a cited row or computed result for the UI's source drawer. Source
-  // rows come from the warehouse (parameterized); computed_* ids from the
-  // in-process result store. Every caller sees the same single dataset today;
-  // per-advisor scoping arrives with Postgres row-level security (Phase 3).
+  // Opens a cited row or computed result for the UI's source drawer.
   app.get("/api/rows/:rowId", async (c) => {
     const rowId = c.req.param("rowId");
     if (!ROW_ID_FORMAT.test(rowId)) return c.json({ error: "Invalid row id" }, 400);
     try {
+      if (options.advisorPool && !rowId.startsWith("computed_")) {
+        const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+        if (session) {
+          const advisorRow = await getAdvisorRowById(options.advisorPool, session, rowId);
+          if (advisorRow) return c.json(advisorRow);
+        }
+      }
       const row = await getRowById(rowId);
       if (!row) {
         return c.json({
@@ -166,6 +184,97 @@ export function createApp(options: AppOptions) {
     } catch (e) {
       console.error("Row lookup failed:", e);
       return c.json({ error: "Failed to load the source row" }, 500);
+    }
+  });
+
+  // --- Phase 3 Advisor Mode: session context, proposals & append-only audit log ---
+
+  app.get("/api/advisor/context", async (c) => {
+    if (!options.advisorPool) return c.json({ advisorMode: false });
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      return c.json({ advisorMode: true, ...session });
+    } catch (e) {
+      console.error("Advisor context lookup failed:", e);
+      return c.json({ error: "Failed to load advisor context" }, 500);
+    }
+  });
+
+  app.get("/api/proposals", async (c) => {
+    if (!options.advisorPool) return c.json({ advisorMode: false, proposals: [] });
+    const rawStatus = c.req.query("status");
+    const status = rawStatus === "pending" || rawStatus === "approved" || rawStatus === "rejected"
+      ? (rawStatus as ProposalStatus)
+      : undefined;
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      const proposals = await listProposals(options.advisorPool, session, { status });
+      return c.json({ advisorMode: true, proposals });
+    } catch (e) {
+      console.error("Proposals lookup failed:", e);
+      return c.json({ error: "Failed to load proposals" }, 500);
+    }
+  });
+
+  const ApproveBodySchema = z.object({
+    after: z.record(z.string(), z.unknown()).optional(),
+  }).optional();
+
+  app.post("/api/proposals/:id/approve", async (c) => {
+    if (!options.advisorPool) return c.json({ error: "Advisor mode is not enabled" }, 404);
+    const body = await c.req.json().catch(() => undefined);
+    const parsed = ApproveBodySchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: "Invalid approval payload", details: parsed.error.issues }, 400);
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      const result = await decideProposal(options.advisorPool, session, {
+        proposalId: c.req.param("id"),
+        decision: "approve",
+        editedAfter: parsed.data?.after,
+        actorId: session.advisorId,
+      });
+      return c.json(result);
+    } catch (e) {
+      if (e instanceof ProposalNotFoundError) return c.json({ error: e.message }, 404);
+      if (e instanceof ProposalConflictError) return c.json({ error: e.message }, 409);
+      if (e instanceof z.ZodError) return c.json({ error: "Invalid edited fields", details: e.issues }, 400);
+      console.error("Proposal approval failed:", e);
+      return c.json({ error: "Failed to approve proposal" }, 500);
+    }
+  });
+
+  app.post("/api/proposals/:id/reject", async (c) => {
+    if (!options.advisorPool) return c.json({ error: "Advisor mode is not enabled" }, 404);
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      const result = await decideProposal(options.advisorPool, session, {
+        proposalId: c.req.param("id"),
+        decision: "reject",
+        actorId: session.advisorId,
+      });
+      return c.json(result);
+    } catch (e) {
+      if (e instanceof ProposalNotFoundError) return c.json({ error: e.message }, 404);
+      if (e instanceof ProposalConflictError) return c.json({ error: e.message }, 409);
+      console.error("Proposal rejection failed:", e);
+      return c.json({ error: "Failed to reject proposal" }, 500);
+    }
+  });
+
+  app.get("/api/audit-log", async (c) => {
+    if (!options.advisorPool) return c.json({ advisorMode: false, entries: [] });
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, c.get("userId"));
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      const entries = await listAuditLog(options.advisorPool, session, 100);
+      return c.json({ advisorMode: true, entries });
+    } catch (e) {
+      console.error("Audit log lookup failed:", e);
+      return c.json({ error: "Failed to load audit log" }, 500);
     }
   });
 
@@ -188,6 +297,10 @@ export function createApp(options: AppOptions) {
       return c.json({ error: decision.message, reason: decision.reason, retryAfterSeconds: decision.retryAfterSeconds }, 429);
     }
 
+    const advisorSession = options.advisorPool
+      ? await resolveAdvisorSession(options.advisorPool, userId).catch(() => null)
+      : null;
+
     const history: BetaMessageParam[] = parsed.data.history.map((m) => ({
       role: m.role,
       content: m.content,
@@ -204,7 +317,14 @@ export function createApp(options: AppOptions) {
         if (!stream.aborted) stream.write(": keepalive\n\n").catch(() => {});
       }, options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
       try {
-        for await (const event of runAgentTurn({ history, userMessage: parsed.data.message, signal: controller.signal })) {
+        for await (const event of runAgentTurn({
+          history,
+          userMessage: parsed.data.message,
+          signal: controller.signal,
+          ...(options.advisorPool && advisorSession
+            ? { advisorContext: { pool: options.advisorPool, tenant: advisorSession } }
+            : {}),
+        })) {
           events.push(event);
           if (!stream.aborted) await stream.write(toSseFrame(event));
           if (event.type === "done" || (event.type === "error" && event.fatal)) break;
@@ -264,6 +384,7 @@ function optionsFromEnv(): AppOptions {
         })
       : undefined,
     originVerifySecret: env.ORIGIN_VERIFY_SECRET,
+    advisorPool: env.DATABASE_URL ? createPool(env.DATABASE_URL) : undefined,
   };
 }
 

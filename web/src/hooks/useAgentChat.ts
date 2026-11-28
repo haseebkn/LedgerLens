@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentStreamEvent, UsageSummary } from "financial-context-agent/streaming-types";
+import type { AgentStreamEvent, ProposalPayload, UsageSummary } from "financial-context-agent/streaming-types";
 import { streamAgentEvents } from "../lib/sse.js";
 import { apiFetch, errorMessage } from "../lib/api.js";
 
@@ -33,6 +33,8 @@ export interface ChatMessage {
   toolTimeline: ToolTimelineItem[];
   spans: SpanItem[];
   citedRowIds: string[];
+  /** Pending or decided advisor proposals created during this turn. */
+  proposals?: ProposalPayload[];
   /** Dollar figures the agent's grounding check couldn't tie to a citation. */
   citationWarnings?: CitationWarning[];
   /** "stopped": the user pressed Stop. Not an error, and not sent as history. */
@@ -133,6 +135,11 @@ function applyEvent(message: ChatMessage, event: AgentStreamEvent): ChatMessage 
       return message.citedRowIds.includes(event.rowId)
         ? message
         : { ...message, citedRowIds: [...message.citedRowIds, event.rowId] };
+    case "proposal_created": {
+      const existing = message.proposals ?? [];
+      if (existing.some((p) => p.proposalId === event.proposal.proposalId)) return message;
+      return { ...message, proposals: [...existing, event.proposal] };
+    }
     case "citation_warning":
       return {
         ...message,
@@ -244,5 +251,15 @@ export function useAgentChat(streamFn: StreamFn = defaultStreamFn) {
     [messages, streamFn]
   );
 
-  return { messages, isStreaming, send, stop };
+  const updateProposal = useCallback((updated: ProposalPayload) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposals?.some((p) => p.proposalId === updated.proposalId)
+          ? { ...m, proposals: m.proposals.map((p) => (p.proposalId === updated.proposalId ? updated : p)) }
+          : m,
+      ),
+    );
+  }, []);
+
+  return { messages, isStreaming, send, stop, updateProposal };
 }

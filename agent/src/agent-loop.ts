@@ -3,8 +3,13 @@ import type { BetaMessageParam, BetaTextBlock, BetaToolUseBlock } from "@anthrop
 import { randomUUID } from "node:crypto";
 import { env } from "./config.js";
 import { tools } from "./tools/index.js";
+import { makeAdvisorTools } from "./tools/advisor-tools.js";
 import { SYSTEM_PROMPT } from "./lib/system-prompt.js";
+import { ADVISOR_SYSTEM_PROMPT } from "./lib/advisor-prompt.js";
 import { buildRequestContext } from "./lib/request-context.js";
+import type { Pool } from "pg";
+import type { TenantContext } from "./db/client.js";
+import type { ProposalRecord } from "./advisor/proposals.js";
 import {
   extractRowIdsFromToolResult,
   stripUnsupportedCitations,
@@ -58,24 +63,36 @@ export async function* runAgentTurn(params: {
   traceId?: string;
   now?: Date;
   signal?: AbortSignal;
+  advisorContext?: { pool: Pool; tenant: TenantContext };
 }): AsyncGenerator<AgentStreamEvent> {
   const traceId = params.traceId ?? randomUUID();
   const seenRowIds = new Set<string>();
   const evidence: Evidence = new Map();
   let usage = emptyUsage();
   const toolNameById = new Map<string, string>();
+  const pendingProposals: ProposalRecord[] = [];
+
+  const activeTools = params.advisorContext
+    ? makeAdvisorTools({
+        pool: params.advisorContext.pool,
+        tenant: params.advisorContext.tenant,
+        traceId,
+        model: env.AGENT_MODEL,
+        onProposalCreated: (p) => pendingProposals.push(p),
+      })
+    : tools;
 
   const runner = client.beta.messages.toolRunner({
     model: env.AGENT_MODEL,
     max_tokens: MAX_TOKENS,
     system: [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      { type: "text", text: params.advisorContext ? ADVISOR_SYSTEM_PROMPT : SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       {
         type: "text",
         text: buildRequestContext(params.now ?? new Date(), env.USER_TIME_ZONE),
       },
     ],
-    tools: [...tools],
+    tools: [...activeTools],
     messages: [...params.history, { role: "user", content: params.userMessage }],
     max_iterations: env.MAX_TOOL_ITERATIONS,
     stream: true,
@@ -225,6 +242,11 @@ export async function* runAgentTurn(params: {
               durationMs,
             };
           }
+        }
+
+        while (pendingProposals.length > 0) {
+          const proposal = pendingProposals.shift()!;
+          yield { type: "proposal_created", traceId, proposal };
         }
 
         yield {

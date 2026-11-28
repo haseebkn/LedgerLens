@@ -6,7 +6,22 @@
  */
 
 const CITATION_PATTERN = /\[([a-zA-Z0-9_-]+)\](?!\()/g;
-const ROW_ID_PATTERN = /^(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+$/;
+const ROW_ID_PATTERN =
+  /^(?:calendar|plaid|alpaca|computed|hh|acct|pos|txn|note|email|evt|task|prop)_[a-zA-Z0-9_-]+$/;
+const PROVENANCE_KEYS = new Set([
+  "row_id",
+  "result_id",
+  "household_id",
+  "account_id",
+  "position_id",
+  "transaction_id",
+  "note_id",
+  "email_id",
+  "event_id",
+  "task_id",
+  "proposal_id",
+  "doc_id",
+]);
 
 /** Extracts every [row_id]-style citation token from the answer text. */
 export function extractCitations(text: string): string[] {
@@ -31,9 +46,12 @@ export function extractRowIdsFromToolResult(toolResultText: string): string[] {
       value.forEach(visit);
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
-        if (key === "row_id" || key === "result_id") add(child);
-        else if (key === "sample_row_ids" && Array.isArray(child)) child.forEach(add);
-        else if (key !== "raw_payload") visit(child);
+        if (PROVENANCE_KEYS.has(key)) add(child);
+        else if ((key === "sample_row_ids" || key === "position_ids" || key === "sources") && Array.isArray(child)) {
+          child.forEach(add);
+        } else if (key !== "raw_payload") {
+          visit(child);
+        }
       }
     }
   };

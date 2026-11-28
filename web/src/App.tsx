@@ -1,16 +1,18 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { ChatView } from "./components/ChatView.js";
 import { MetricsView } from "./components/MetricsView.js";
+import { ProposalsAuditView } from "./components/ProposalsAuditView.js";
 import { EvalsView } from "./components/EvalsView.js";
 import { SignIn } from "./components/SignIn.js";
 import { fetchAuthConfig, getSession, onSessionChange, setSession, type AuthConfig } from "./lib/api.js";
 import "./App.css";
 
-type Tab = "chat" | "metrics" | "evals";
+type Tab = "chat" | "metrics" | "proposals" | "evals";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "metrics", label: "Metrics" },
+  { id: "proposals", label: "Proposals" },
   { id: "evals", label: "Evals" },
 ];
 
@@ -83,6 +85,9 @@ function Workspace({ canSignOut }: { canSignOut: boolean }) {
         </div>
         {tab === "metrics" && (
           <div className="app-panel" id="panel-metrics" role="tabpanel" aria-labelledby="tab-metrics"><MetricsView /></div>
+        )}
+        {tab === "proposals" && (
+          <div className="app-panel" id="panel-proposals" role="tabpanel" aria-labelledby="tab-proposals"><ProposalsAuditView /></div>
         )}
         {tab === "evals" && (
           <div className="app-panel" id="panel-evals" role="tabpanel" aria-labelledby="tab-evals"><EvalsView /></div>
