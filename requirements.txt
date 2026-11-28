@@ -46,5 +46,5 @@ sentence-transformers==3.0.1
 
 # Semantic Explorer dashboard & internal retrieval service (vector_prep/)
 fastapi>=0.115.0
-uvicorn>=0.32.0
+uvicorn>=0.54.0
 
