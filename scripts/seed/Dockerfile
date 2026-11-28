@@ -8,7 +8,7 @@
 #     --build-context warehouse=docker-image://ledgerlens-warehouse:demo -t ledgerlens-agent:demo .
 #
 # docker-compose.yml wires the same thing with `additional_contexts`.
-FROM python:3.11-slim
+FROM python:3.13-slim
 WORKDIR /repo
 
 # dbt and DuckDB versions come from requirements.txt, the single place they
