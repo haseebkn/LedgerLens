@@ -64,7 +64,7 @@ jobs:
       # tests (query_warehouse, get_portfolio_snapshot, summarize_spend) run
       # against it directly rather than against mocks.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: "npm"
@@ -151,7 +151,7 @@ jobs:
       - name: Generate deterministic synthetic advisor book
         run: python scripts/seed/generate_advisor_book.py --out .demo/advisor_book/book.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: "npm"
@@ -194,7 +194,7 @@ jobs:
       - name: Start the stack and wait for health checks
         run: $COMPOSE up -d --wait --wait-timeout 300 web
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
