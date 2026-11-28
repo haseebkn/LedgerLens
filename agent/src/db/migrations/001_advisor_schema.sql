@@ -354,11 +354,20 @@ BEGIN
     v_meeting_notes, v_emails, v_calendar_events, v_tasks, v_proposals, v_audit_log
     TO ledgerlens_app;
 
-  -- SQL tool read-only role may ONLY read allowlisted views (RLS enforced via security_invoker).
+  -- SQL tool read-only role uses security_invoker=true views, so Postgres
+  -- checks both RLS and base-table SELECT privileges as ledgerlens_ro.
+  -- Grant SELECT only on safe tables/columns (never embedding vectors,
+  -- internal advisors/firms/agent_turns, or any write privileges).
   GRANT SELECT ON
+    households, household_members, accounts, positions, transactions,
+    calendar_events, tasks, proposals, audit_log,
     v_households, v_household_members, v_accounts, v_positions, v_transactions,
     v_meeting_notes, v_emails, v_calendar_events, v_tasks, v_proposals, v_audit_log
     TO ledgerlens_ro;
+  GRANT SELECT (note_id, firm_id, advisor_id, household_id, meeting_date, title, attendees, transcript)
+    ON meeting_notes TO ledgerlens_ro;
+  GRANT SELECT (email_id, firm_id, advisor_id, household_id, sent_at, direction, sender, recipient, subject, body)
+    ON emails TO ledgerlens_ro;
 EXCEPTION
   WHEN insufficient_privilege THEN
     -- Managed Postgres roles (e.g. Neon default owner) are already non-superuser,

@@ -98,15 +98,42 @@ describe.skipIf(!CAN_RUN)("Postgres + pgvector + Row-Level Security (integration
     );
     expect(viewRes.rows).toHaveLength(36);
 
-    // Base tables outside allowlisted views must be inaccessible to ledgerlens_ro.
+    const notesRes = await withTenantContext(
+      pool,
+      SARAH,
+      (c) => c.query("SELECT note_id FROM v_meeting_notes LIMIT 5"),
+      { readOnly: true, role: RO_ROLE, statementTimeoutMs: 5000 },
+    );
+    expect(notesRes.rows.length).toBeGreaterThan(0);
+
+    // Non-allowlisted tables and vector columns must be inaccessible to ledgerlens_ro.
     await expect(
       withTenantContext(
         pool,
         SARAH,
-        (c) => c.query("SELECT note_id FROM meeting_notes LIMIT 1"),
+        (c) => c.query("SELECT embedding FROM meeting_notes LIMIT 1"),
         { readOnly: true, role: RO_ROLE },
       ),
     ).rejects.toThrow(/permission denied/);
+
+    await expect(
+      withTenantContext(
+        pool,
+        SARAH,
+        (c) => c.query("SELECT * FROM advisors LIMIT 1"),
+        { readOnly: true, role: RO_ROLE },
+      ),
+    ).rejects.toThrow(/permission denied/);
+
+    // Writes must be refused by both the read-only transaction and role grants.
+    await expect(
+      withTenantContext(
+        pool,
+        SARAH,
+        (c) => c.query("DELETE FROM households WHERE household_id = 'hh_priya_nair'"),
+        { readOnly: true, role: RO_ROLE },
+      ),
+    ).rejects.toThrow(/read-only|permission denied/);
   });
 
   it("enforces append-only audit_log (allows INSERT, rejects UPDATE and DELETE)", async () => {
