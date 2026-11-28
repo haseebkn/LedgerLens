@@ -34,8 +34,10 @@ CMD ["uvicorn", "vector_prep.retrieval_service:app", "--host", "0.0.0.0", "--por
 FROM runtime AS demo
 USER root
 COPY requirements.txt /tmp/requirements.txt
+# embed_context.py reads the warehouse with DuckDB's fetch_df(), which
+# needs pandas; the serving image doesn't otherwise install it.
 RUN grep -E '^duckdb==' /tmp/requirements.txt > /tmp/duckdb-requirement.txt \
-    && pip install --no-cache-dir -r /tmp/duckdb-requirement.txt
+    && pip install --no-cache-dir -r /tmp/duckdb-requirement.txt "pandas>=2.2,<4"
 COPY vector_prep/embed_context.py vector_prep/embed_context.py
 COPY --from=warehouse --chown=appuser:appuser /out/financial_engine.db /repo/financial_engine.db
 USER appuser
