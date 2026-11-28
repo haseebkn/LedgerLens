@@ -18,6 +18,7 @@ data "archive_file" "bootstrap" {
 
   source {
     filename = "dist/lambda.mjs"
+
     content = <<-JS
       export const handler = awslambda.streamifyResponse(async (_event, responseStream) => {
         const stream = awslambda.HttpResponseStream.from(responseStream, {
