@@ -1,10 +1,36 @@
 import { z } from "zod/v4";
 import { readFileSync } from "node:fs";
 
+export const LEGACY_CATEGORIES = ["retrieval", "aggregation", "multihop", "refusal", "nodata"] as const;
+
+export const ADVISOR_CATEGORIES = [
+  "client_lookup",
+  "portfolio_review",
+  "note_search",
+  "proposal_governance",
+  "tenant_isolation",
+  "prompt_injection",
+] as const;
+
+export const ALL_CATEGORIES = [...LEGACY_CATEGORIES, ...ADVISOR_CATEGORIES] as const;
+
+export const EvalCategorySchema = z.enum(ALL_CATEGORIES);
+export type EvalCategory = z.infer<typeof EvalCategorySchema>;
+
+export const ExpectedProposalSchema = z
+  .object({
+    kind: z.enum(["crm_update", "draft_follow_up", "create_task"]),
+    min_count: z.number().int().positive().default(1),
+    max_count: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const GoldenCaseSchema = z
   .object({
     id: z.string().min(1),
-    category: z.enum(["retrieval", "aggregation", "multihop", "refusal", "nodata"]),
+    suite: z.enum(["personal", "advisor"]).optional(),
+    category: EvalCategorySchema,
+    advisor_id: z.string().min(1).optional(),
     question: z.string().min(1),
     expected_tools: z.array(z.string()),
     forbidden_tools: z.array(z.string()).optional(),
@@ -21,6 +47,9 @@ export const GoldenCaseSchema = z
           .refine((value) => value.min_hits <= value.any_of.length, "min_hits cannot exceed any_of length")
       )
       .optional(),
+    forbidden_answer_substrings: z.array(z.string().min(1)).optional(),
+    expected_proposals: z.array(ExpectedProposalSchema).optional(),
+    forbid_proposals: z.boolean().optional(),
     rubric: z.string().min(1),
   })
   .strict();
@@ -37,19 +66,26 @@ export function loadGoldenSet(path: string): GoldenCase[] {
     try {
       parsed = JSON.parse(line);
     } catch (e) {
-      throw new Error(`golden.jsonl line ${i + 1}: invalid JSON — ${(e as Error).message}`);
+      throw new Error(`${path} line ${i + 1}: invalid JSON — ${(e as Error).message}`);
     }
     const result = GoldenCaseSchema.safeParse(parsed);
     if (!result.success) {
-      throw new Error(`golden.jsonl line ${i + 1}: ${result.error.issues.map((iss) => iss.message).join("; ")}`);
+      throw new Error(`${path} line ${i + 1}: ${result.error.issues.map((iss) => iss.message).join("; ")}`);
     }
     return result.data;
   });
 }
 
+export interface CreatedProposalSummary {
+  proposalId: string;
+  kind: "crm_update" | "draft_follow_up" | "create_task";
+  householdId: string;
+  summary?: string;
+}
+
 export interface CaseResult {
   id: string;
-  category: GoldenCase["category"];
+  category: EvalCategory;
   question: string;
   answerText: string;
   toolCalls: string[];
@@ -67,6 +103,16 @@ export interface CaseResult {
   judgeSpread: number; // max judge score - min judge score across samples
   judgeExplanation: string;
   citationsValid: boolean;
+
+  // Phase 4 (Evals v2) deterministic grounding, safety & governance telemetry
+  groundingScore?: number; // 0..1
+  citationWarningCount?: number;
+  fabricatedCitations?: string[];
+  safetyScore?: number; // 0 or 1
+  safetyViolations?: string[];
+  createdProposals?: CreatedProposalSummary[];
+  judgeCostUsd?: number;
+  repaired?: boolean;
 }
 
 export interface EvalRunMetadata {
@@ -77,6 +123,18 @@ export interface EvalRunMetadata {
   scope: "full" | "partial";
   costScope: "agent_only";
   latencyScope: "agent_only";
+  suite?: "personal" | "advisor";
+  judgeModel?: string;
+}
+
+export interface CategoryStats {
+  count: number;
+  toolChoiceAccuracy: number;
+  meanRecall: number;
+  meanJudgeScore: number;
+  meanJudgeSpread: number;
+  meanGroundingScore?: number;
+  safetyPassRate?: number;
 }
 
 export interface EvalReport {
@@ -84,10 +142,7 @@ export interface EvalReport {
   model: string;
   totalCases: number;
   metadata?: EvalRunMetadata;
-  categoryBreakdown: Record<
-    GoldenCase["category"],
-    { count: number; toolChoiceAccuracy: number; meanRecall: number; meanJudgeScore: number; meanJudgeSpread: number }
-  >;
+  categoryBreakdown: Record<string, CategoryStats>;
   aggregate: {
     toolChoiceAccuracy: number;
     meanRecall: number;
@@ -97,6 +152,10 @@ export interface EvalReport {
     totalCostUsd: number;
     p50DurationMs: number;
     p95DurationMs: number;
+    meanGroundingScore?: number;
+    safetyPassRate?: number;
+    totalCitationWarnings?: number;
+    totalJudgeCostUsd?: number;
   };
   results: CaseResult[];
 }

@@ -1,7 +1,9 @@
 /** Validate CLI arguments before loading credentials or starting paid requests. */
 export function parseEvalArgs(argv: string[]) {
+  let suite: "personal" | "advisor" = "personal";
   let subset: number | undefined;
   let caseIds: string[] | undefined;
+  let categories: string[] | undefined;
   let judgeN: number | undefined;
   let gate = false;
   let write = true;
@@ -12,12 +14,26 @@ export function parseEvalArgs(argv: string[]) {
     seen.add(flag);
     if (flag === "--gate") { gate = true; continue; }
     if (flag === "--no-write") { write = false; continue; }
-    if (!["--subset", "--cases", "--judge-n"].includes(flag)) throw new Error(`Unknown option: ${flag}`);
+    if (!["--suite", "--subset", "--cases", "--category", "--judge-n"].includes(flag)) {
+      throw new Error(`Unknown option: ${flag}`);
+    }
     const value = argv[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
-    if (flag === "--cases") {
+    if (flag === "--suite") {
+      if (value !== "personal" && value !== "advisor") {
+        throw new Error("--suite must be 'personal' or 'advisor'");
+      }
+      suite = value;
+    } else if (flag === "--cases") {
       caseIds = value.split(",").map((id) => id.trim());
-      if (caseIds.some((id) => !id) || new Set(caseIds).size !== caseIds.length) throw new Error("--cases requires unique, non-empty case ids");
+      if (caseIds.some((id) => !id) || new Set(caseIds).size !== caseIds.length) {
+        throw new Error("--cases requires unique, non-empty case ids");
+      }
+    } else if (flag === "--category") {
+      categories = value.split(",").map((c) => c.trim());
+      if (categories.some((c) => !c) || new Set(categories).size !== categories.length) {
+        throw new Error("--category requires unique, non-empty category names");
+      }
     } else {
       const number = Number(value);
       if (!Number.isInteger(number) || number < 1) throw new Error(`${flag} must be a positive integer`);
@@ -26,5 +42,5 @@ export function parseEvalArgs(argv: string[]) {
     }
   }
   if (subset !== undefined && caseIds) throw new Error("Use either --subset or --cases, not both");
-  return { subset, caseIds, judgeN, gate, write };
+  return { suite, subset, caseIds, categories, judgeN, gate, write };
 }
