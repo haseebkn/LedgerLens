@@ -8,13 +8,22 @@ interface CategoryStats {
   meanRecall: number;
   meanJudgeScore: number;
   meanJudgeSpread: number;
+  meanGroundingScore?: number;
+  safetyPassRate?: number;
 }
 
 interface EvalReport {
   runAt: string;
   model: string;
   totalCases: number;
-  metadata?: { latencyScope: "agent_only"; costScope: "agent_only"; judgeN: number };
+  metadata?: {
+    latencyScope: "agent_only";
+    costScope: "agent_only";
+    judgeN: number;
+    suite?: "personal" | "advisor";
+    scorerVersion?: string;
+    judgeModel?: string;
+  };
   categoryBreakdown: Record<string, CategoryStats>;
   aggregate: {
     toolChoiceAccuracy: number;
@@ -25,6 +34,10 @@ interface EvalReport {
     totalCostUsd: number;
     p50DurationMs: number;
     p95DurationMs: number;
+    meanGroundingScore?: number;
+    safetyPassRate?: number;
+    totalCitationWarnings?: number;
+    totalJudgeCostUsd?: number;
   };
   results: {
     id: string;
@@ -37,6 +50,11 @@ interface EvalReport {
     judgeExplanation: string;
     errored: boolean;
     citationsValid?: boolean;
+    groundingScore?: number;
+    citationWarningCount?: number;
+    fabricatedCitations?: string[];
+    safetyScore?: number;
+    safetyViolations?: string[];
     manualAdjudication?: {
       verdict: "judge_false_negative";
       score: number;
@@ -69,22 +87,36 @@ export function EvalsView() {
   if (notFound) {
     return (
       <p className="empty-state">
-        No eval report yet. Run <code>npm run eval</code> in <code>agent/</code> (requires
+        No eval report yet. Run <code>npm run eval</code> or <code>npm run eval:advisor</code> in <code>agent/</code> (requires
         <code> ANTHROPIC_API_KEY</code> and a populated local warehouse).
       </p>
     );
   }
   if (!report) return <p className="empty-state">Loading eval report…</p>;
 
+  const hasV2Metrics =
+    report.aggregate.meanGroundingScore !== undefined || report.aggregate.safetyPassRate !== undefined;
+
   const failing = report.results.filter(
-    (r) => r.errored || r.toolChoiceScore < 1 || r.recallScore < 1 || r.judgeScore < 4 || r.citationsValid === false
+    (r) =>
+      r.errored ||
+      r.toolChoiceScore < 1 ||
+      r.recallScore < 1 ||
+      r.judgeScore < 4 ||
+      r.citationsValid === false ||
+      (r.groundingScore !== undefined && r.groundingScore < 1) ||
+      r.safetyScore === 0,
   );
 
   return (
     <div className="metrics-view">
       <p className="eval-meta">
+        {report.metadata?.suite ? `${report.metadata.suite === "advisor" ? "Advisor v2" : "Personal v1"} · ` : ""}
         {report.model} · {report.totalCases} cases · {new Date(report.runAt).toLocaleString()} ·{" "}
         Agent cost {formatUsd(report.aggregate.totalCostUsd)} (judge excluded)
+        {report.aggregate.totalJudgeCostUsd !== undefined
+          ? ` · Judge cost ${formatUsd(report.aggregate.totalJudgeCostUsd)}`
+          : ""}
       </p>
       {!report.metadata && (
         <p className="stat-sub">Historical report: latency includes both the agent turn and judge evaluation.</p>
@@ -99,6 +131,21 @@ export function EvalsView() {
           <div className="stat-label">Mean recall</div>
           <div className="stat-value">{(report.aggregate.meanRecall * 100).toFixed(1)}%</div>
         </div>
+        {report.aggregate.meanGroundingScore !== undefined && (
+          <div className="stat-card">
+            <div className="stat-label">Grounding score</div>
+            <div className="stat-value">{(report.aggregate.meanGroundingScore * 100).toFixed(1)}%</div>
+            {report.aggregate.totalCitationWarnings !== undefined && (
+              <div className="stat-sub">{report.aggregate.totalCitationWarnings} citation warnings</div>
+            )}
+          </div>
+        )}
+        {report.aggregate.safetyPassRate !== undefined && (
+          <div className="stat-card">
+            <div className="stat-label">Safety &amp; governance</div>
+            <div className="stat-value">{(report.aggregate.safetyPassRate * 100).toFixed(1)}%</div>
+          </div>
+        )}
         <div className="stat-card">
           <div className="stat-label">Mean judge score</div>
           <div className="stat-value">{report.aggregate.meanJudgeScore.toFixed(2)}/5</div>
@@ -126,6 +173,8 @@ export function EvalsView() {
               <th>Cases</th>
               <th>Tool accuracy</th>
               <th>Recall</th>
+              {hasV2Metrics && <th>Grounding</th>}
+              {hasV2Metrics && <th>Safety</th>}
               <th>Judge</th>
               <th>Spread</th>
             </tr>
@@ -137,6 +186,12 @@ export function EvalsView() {
                 <td>{stats.count}</td>
                 <td>{(stats.toolChoiceAccuracy * 100).toFixed(1)}%</td>
                 <td>{(stats.meanRecall * 100).toFixed(1)}%</td>
+                {hasV2Metrics && (
+                  <td>{stats.meanGroundingScore !== undefined ? `${(stats.meanGroundingScore * 100).toFixed(1)}%` : "—"}</td>
+                )}
+                {hasV2Metrics && (
+                  <td>{stats.safetyPassRate !== undefined ? `${(stats.safetyPassRate * 100).toFixed(1)}%` : "—"}</td>
+                )}
                 <td>{stats.meanJudgeScore.toFixed(2)}</td>
                 <td>{stats.meanJudgeSpread.toFixed(2)}</td>
               </tr>
@@ -154,11 +209,24 @@ export function EvalsView() {
                 <div className="eval-failure-head">
                   <span className="mono">{r.id}</span>
                   <span className="tool-duration">
-                    tool {r.toolChoiceScore} · recall {r.recallScore.toFixed(2)} · judge {r.judgeScore.toFixed(2)} · spread {r.judgeSpread.toFixed(2)}
+                    tool {r.toolChoiceScore} · recall {r.recallScore.toFixed(2)}
+                    {r.groundingScore !== undefined ? ` · grounding ${r.groundingScore.toFixed(2)}` : ""}
+                    {r.safetyScore !== undefined ? ` · safety ${r.safetyScore}` : ""}
+                    {" "}· judge {r.judgeScore.toFixed(2)} · spread {r.judgeSpread.toFixed(2)}
                   </span>
                 </div>
                 <p className="eval-failure-question">{r.question}</p>
                 {r.citationsValid === false && <p className="eval-failure-explanation">Citation check flagged a problem.</p>}
+                {r.fabricatedCitations && r.fabricatedCitations.length > 0 && (
+                  <p className="eval-failure-explanation">
+                    Fabricated citation IDs: {r.fabricatedCitations.join(", ")}
+                  </p>
+                )}
+                {r.safetyViolations && r.safetyViolations.length > 0 && (
+                  <p className="eval-failure-explanation">
+                    Safety violation: {r.safetyViolations.join("; ")}
+                  </p>
+                )}
                 {r.judgeExplanation && <p className="eval-failure-explanation">{r.judgeExplanation}</p>}
                 {r.manualAdjudication && (
                   <div className="eval-adjudication">

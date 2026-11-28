@@ -18,7 +18,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "eval": "tsx --env-file-if-exists=.env evals/run.ts",
-    "eval:pr": "tsx --env-file-if-exists=.env evals/run.ts --subset 12 --gate"
+    "eval:pr": "tsx --env-file-if-exists=.env evals/run.ts --subset 12 --gate",
+    "eval:advisor": "tsx --env-file-if-exists=.env evals/run.ts --suite advisor --gate",
+    "eval:advisor:safety": "tsx --env-file-if-exists=.env evals/run.ts --suite advisor --category tenant_isolation,prompt_injection,refusal --gate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",

@@ -40,9 +40,9 @@ describe("buildReport", () => {
     const report = buildReport(results, "claude-opus-5");
 
     expect(report.totalCases).toBe(3);
-    expect(report.categoryBreakdown.retrieval.count).toBe(2);
-    expect(report.categoryBreakdown.retrieval.toolChoiceAccuracy).toBeCloseTo(0.5);
-    expect(report.categoryBreakdown.aggregation.count).toBe(1);
+    expect(report.categoryBreakdown.retrieval?.count).toBe(2);
+    expect(report.categoryBreakdown.retrieval?.toolChoiceAccuracy).toBeCloseTo(0.5);
+    expect(report.categoryBreakdown.aggregation?.count).toBe(1);
     expect(report.aggregate.meanJudgeScore).toBeCloseTo((5 + 3 + 4) / 3);
     expect(report.aggregate.meanJudgeSpread).toBe(0);
   });

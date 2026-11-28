@@ -169,7 +169,7 @@ jobs:
           DB_APP_ROLE: ledgerlens_app
           DB_RO_ROLE: ledgerlens_ro
           ADVISOR_BOOK_PATH: ../.demo/advisor_book/book.json
-        run: npx vitest run src/db/rls.integration.test.ts
+        run: npx vitest run src/db/rls.integration.test.ts evals/advisor-golden.test.ts
 
   # Builds and runs the images that ship (the compose demo stack, with the
   # seed warehouse baked in) against a fake Anthropic API, then checks what a

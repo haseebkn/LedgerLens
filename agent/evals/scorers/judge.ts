@@ -1,9 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod/v4";
 import { env } from "../../src/config.js";
-import type { GoldenCase } from "../types.js";
+import { estimateCostUsd } from "../../src/lib/usage.js";
+import type { CreatedProposalSummary, GoldenCase } from "../types.js";
 
-const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, baseURL: env.ANTHROPIC_BASE_URL });
+
+export const JUDGE_MODEL = process.env.EVAL_JUDGE_MODEL?.trim() || env.AGENT_MODEL;
 
 export const JUDGE_SYSTEM_PROMPT =
   "You are grading an AI financial assistant's answer against a case-specific rubric. The rubric is the sole " +
@@ -11,7 +14,8 @@ export const JUDGE_SYSTEM_PROMPT =
   "clarifying question, a refusal, or an offer to answer later when the rubric requires factual results or " +
   "calculated totals; an answer that provides none of the required result should score 1. Only reward a refusal " +
   "when the rubric itself requires or permits declining. Do not invent requirements absent from the rubric. Be " +
-  "strict about fabricated facts and citations: a cited row_id must support the claim attached to it.";
+  "strict about fabricated facts and citations: a cited row_id must appear in the retrieved evidence (when " +
+  "provided) and support the claim attached to it.";
 
 const JUDGE_TOOL = {
   name: "submit_judgment",
@@ -43,6 +47,13 @@ export interface JudgeResult {
   score: number;
   citationsValid: boolean;
   explanation: string;
+  costUsd?: number;
+}
+
+export interface JudgeEvidence {
+  toolCalls?: string[];
+  seenRowIds?: string[];
+  createdProposals?: CreatedProposalSummary[];
 }
 
 const JudgmentSchema = z.object({
@@ -56,10 +67,34 @@ export function parseJudgment(input: unknown): JudgeResult {
   return { score: validated.score, citationsValid: validated.citations_valid, explanation: validated.explanation };
 }
 
+function formatEvidenceBlock(evidence?: JudgeEvidence): string {
+  if (!evidence) return "";
+  const lines: string[] = ["Observed turn evidence:"];
+  if (evidence.toolCalls) {
+    lines.push(`- Tools called: ${evidence.toolCalls.length > 0 ? evidence.toolCalls.join(", ") : "(none)"}`);
+  }
+  if (evidence.seenRowIds) {
+    const sample = evidence.seenRowIds.slice(0, 40);
+    lines.push(
+      `- Observed row/result IDs (${evidence.seenRowIds.length}): ${sample.length > 0 ? sample.join(", ") : "(none)"}`,
+    );
+  }
+  if (evidence.createdProposals && evidence.createdProposals.length > 0) {
+    lines.push(
+      `- Pending proposals created: ${evidence.createdProposals.map((p) => `${p.kind} for ${p.householdId} (${p.proposalId})`).join("; ")}`,
+    );
+  }
+  return `\n\n${lines.join("\n")}`;
+}
+
 /** Scores one answer against its case's rubric using Claude as judge, forced into structured output via tool_choice. */
-export async function judgeSingle(goldenCase: GoldenCase, answerText: string): Promise<JudgeResult> {
+export async function judgeSingle(
+  goldenCase: GoldenCase,
+  answerText: string,
+  evidence?: JudgeEvidence,
+): Promise<JudgeResult> {
   const response = await client.messages.create({
-    model: env.AGENT_MODEL,
+    model: JUDGE_MODEL,
     max_tokens: 1024,
     system: JUDGE_SYSTEM_PROMPT,
     tools: [JUDGE_TOOL],
@@ -69,8 +104,9 @@ export async function judgeSingle(goldenCase: GoldenCase, answerText: string): P
         role: "user",
         content:
           `Question: ${goldenCase.question}\n\n` +
-          `Rubric: ${goldenCase.rubric}\n\n` +
-          `Assistant's answer:\n${answerText || "(empty — the assistant produced no text response)"}`,
+          `Rubric: ${goldenCase.rubric}` +
+          formatEvidenceBlock(evidence) +
+          `\n\nAssistant's answer:\n${answerText || "(empty — the assistant produced no text response)"}`,
       },
     ],
   });
@@ -79,22 +115,34 @@ export async function judgeSingle(goldenCase: GoldenCase, answerText: string): P
   if (!toolUse || toolUse.type !== "tool_use") {
     throw new Error("Judge did not return a tool_use block — cannot extract a structured score.");
   }
-  return parseJudgment(toolUse.input);
+  const parsed = parseJudgment(toolUse.input);
+  const costUsd = estimateCostUsd(
+    {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+    JUDGE_MODEL,
+  );
+  return { ...parsed, costUsd };
 }
 
 /**
  * Runs the judge n times and averages the score, since a single LLM-judge
  * sample is noise dressed as a metric. Returns the mean score, the spread
  * (max - min) so callers can see how much the judge disagreed with itself,
- * and the explanation from the run closest to the mean.
+ * total judge cost (tracked separately from agent cost), and the explanation
+ * from the run closest to the mean.
  */
 export async function judgeWithSpread(
   goldenCase: GoldenCase,
   answerText: string,
-  n = 3
-): Promise<{ meanScore: number; spread: number; citationsValid: boolean; explanation: string }> {
+  n = 3,
+  evidence?: JudgeEvidence,
+): Promise<{ meanScore: number; spread: number; citationsValid: boolean; explanation: string; judgeCostUsd?: number }> {
   if (!Number.isInteger(n) || n < 1) throw new Error("Judge sample count must be a positive integer");
-  const runs = await Promise.all(Array.from({ length: n }, () => judgeSingle(goldenCase, answerText)));
+  const runs = await Promise.all(Array.from({ length: n }, () => judgeSingle(goldenCase, answerText, evidence)));
   const scores = runs.map((r) => r.score);
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
   const spread = Math.max(...scores) - Math.min(...scores);
@@ -103,5 +151,6 @@ export async function judgeWithSpread(
   // citation problem, surface it — false negatives here are worse than
   // false positives for a hallucination check.
   const citationsValid = runs.every((r) => r.citationsValid);
-  return { meanScore, spread, citationsValid, explanation: closest.explanation };
+  const judgeCostUsd = runs.reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
+  return { meanScore, spread, citationsValid, explanation: closest.explanation, judgeCostUsd };
 }
