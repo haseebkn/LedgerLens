@@ -322,7 +322,7 @@ describe.skipIf(!CAN_RUN)("Postgres + pgvector + Row-Level Security (integration
       {
         extractFn: async () => ({
           extraction: {
-            client_name_or_id: "Chen Family",
+            client_name_or_id: "David & Lin Chen",
             title: "RESP Drawdown Planning — Chen Family",
             date: "2026-10-25",
             attendees: ["Sarah Jenkins", "David Chen"],

@@ -34,25 +34,36 @@ export async function resolveHousehold(
     return { householdId: exact.rows[0].household_id, name: exact.rows[0].name };
   }
 
-  const byName = await client.query<{ household_id: string; name: string }>(
-    `SELECT DISTINCT h.household_id, h.name
-     FROM households h
-     LEFT JOIN household_members m ON m.household_id = h.household_id
-     WHERE h.name ILIKE $1 OR m.full_name ILIKE $1
-     ORDER BY h.name ASC
-     LIMIT 10`,
-    [`%${input}%`],
-  );
+  const queryByPattern = async (pattern: string) =>
+    (
+      await client.query<{ household_id: string; name: string }>(
+        `SELECT DISTINCT h.household_id, h.name
+         FROM households h
+         LEFT JOIN household_members m ON m.household_id = h.household_id
+         WHERE h.name ILIKE $1 OR m.full_name ILIKE $1
+         ORDER BY h.name ASC
+         LIMIT 10`,
+        [`%${pattern}%`],
+      )
+    ).rows;
 
-  if (byName.rows.length === 0) return null;
-  if (byName.rows.length === 1) {
-    return { householdId: byName.rows[0]!.household_id, name: byName.rows[0]!.name };
+  let matches = await queryByPattern(input);
+  if (matches.length === 0) {
+    const stripped = input.replace(/\s+(?:family|household)$/i, "").trim();
+    if (stripped && stripped.toLowerCase() !== input.toLowerCase()) {
+      matches = await queryByPattern(stripped);
+    }
+  }
+
+  if (matches.length === 0) return null;
+  if (matches.length === 1) {
+    return { householdId: matches[0]!.household_id, name: matches[0]!.name };
   }
   // Prefer exact case-insensitive household name match before failing ambiguously.
-  const exactName = byName.rows.find((r) => r.name.toLowerCase() === input.toLowerCase());
+  const exactName = matches.find((r) => r.name.toLowerCase() === input.toLowerCase());
   if (exactName) return { householdId: exactName.household_id, name: exactName.name };
 
-  const options = byName.rows.map((r) => `${r.name} (${r.household_id})`).join(", ");
+  const options = matches.map((r) => `${r.name} (${r.household_id})`).join(", ");
   throw new Error(`Ambiguous client "${clientIdOrName}". Matching households: ${options}. Pass the exact household_id.`);
 }
 
