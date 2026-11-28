@@ -28,6 +28,7 @@ import {
   ProposalNotFoundError,
   type ProposalStatus,
 } from "./advisor/proposals.js";
+import { ingestDocument, IngestValidationError, type ExtractDocumentFn } from "./advisor/ingest.js";
 import type { Pool } from "pg";
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
@@ -43,6 +44,8 @@ export interface AppOptions {
   originVerifySecret?: string;
   /** Optional Postgres pool enabling Phase 3 multi-advisor mode with RLS, proposals & audit log. */
   advisorPool?: Pool;
+  /** Optional extractor override for deterministic testing of POST /api/ingest. */
+  ingestExtractFn?: ExtractDocumentFn;
 }
 
 function equalSecret(provided: string, expected: string): boolean {
@@ -275,6 +278,61 @@ export function createApp(options: AppOptions) {
     } catch (e) {
       console.error("Audit log lookup failed:", e);
       return c.json({ error: "Failed to load audit log" }, 500);
+    }
+  });
+
+  const IngestRequestSchema = z.object({
+    kind: z.enum(["transcript", "eml"]),
+    filename: z.string().trim().max(200).optional(),
+    content: z.string().trim().min(1, "Document content is required").max(60_000),
+    clientId: z.string().trim().max(120).optional(),
+  });
+
+  app.use("/api/ingest", bodyLimit({
+    maxSize: 128 * 1024,
+    onError: (c) => c.json({ error: "Request body exceeds 128 KiB" }, 413),
+  }));
+
+  app.post("/api/ingest", async (c) => {
+    if (!options.advisorPool) return c.json({ error: "Advisor mode is not enabled" }, 404);
+    const body = await c.req.json().catch(() => null);
+    const parsed = IngestRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "Invalid ingest request", details: parsed.error.issues }, 400);
+    }
+
+    const userId = c.get("userId");
+    const decision = options.limiter.begin(userId);
+    if (!decision.allowed) {
+      c.header("Retry-After", String(decision.retryAfterSeconds));
+      return c.json({ error: decision.message, reason: decision.reason, retryAfterSeconds: decision.retryAfterSeconds }, 429);
+    }
+
+    let tokensUsed = 0;
+    try {
+      const session = await resolveAdvisorSession(options.advisorPool, userId);
+      if (!session) return c.json({ error: "Advisor account not found" }, 403);
+      const result = await ingestDocument(
+        options.advisorPool,
+        session,
+        {
+          kind: parsed.data.kind,
+          filename: parsed.data.filename,
+          content: parsed.data.content,
+          clientId: parsed.data.clientId,
+          signal: c.req.raw.signal,
+        },
+        options.ingestExtractFn ? { extractFn: options.ingestExtractFn } : undefined,
+      );
+      tokensUsed = result.usage.inputTokens + result.usage.outputTokens;
+      return c.json(result, 201);
+    } catch (e) {
+      if (e instanceof IngestValidationError) return c.json({ error: e.message }, 400);
+      if (e instanceof z.ZodError) return c.json({ error: "Extracted output failed validation", details: e.issues }, 422);
+      console.error("Document ingest failed:", e);
+      return c.json({ error: "Failed to ingest document" }, 500);
+    } finally {
+      options.limiter.record(userId, tokensUsed);
     }
   });
 
