@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { queryRowsParams } from "../lib/duckdb.js";
 import { createResultId } from "../lib/result-id.js";
+import { rememberComputedResult } from "../lib/result-store.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -99,8 +100,17 @@ export const summarizeSpendTool = betaZodTool({
       })),
     };
 
+    const resultId = createResultId("spend", payload);
+    rememberComputedResult({
+      resultId,
+      kind: "spend",
+      sql: sql.trim(),
+      params: [args.start, args.end],
+      rows: payload.breakdown,
+      summary: { range: payload.range, transaction_type: payload.transaction_type, grouped_by: payload.grouped_by, grand_total: payload.grand_total },
+    });
     return JSON.stringify(
-      { result_id: createResultId("spend", payload), ...payload },
+      { result_id: resultId, ...payload },
       null,
       2
     );

@@ -112,6 +112,7 @@ resource "aws_ecs_task_definition" "agent" {
     }]
     environment = [
       { name = "DUCKDB_PATH", value = "/data/financial_engine.db" },
+      { name = "RAW_DATA_ROOT", value = "/data/raw_data" },
       { name = "RETRIEVAL_SERVICE_URL", value = "http://retrieval.internal:8100" },
     ]
     secrets = [

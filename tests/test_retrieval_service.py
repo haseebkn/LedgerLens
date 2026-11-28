@@ -49,6 +49,16 @@ class FakeCollection:
     def count(self):
         return self._count
 
+    def get(self, where=None, **kwargs):
+        metadata = self._results["metadatas"][0]
+        if where:
+            metadata = [
+                m
+                for m in metadata
+                if m["source_system"] == where["source_system"]["$eq"]
+            ]
+        return {"ids": [str(i) for i in range(len(metadata))], "metadatas": metadata}
+
 
 @pytest.fixture(autouse=True)
 def configured_token(monkeypatch):
@@ -164,8 +174,7 @@ def test_search_builds_combined_date_range_and_source_filter(ready_client):
     assert where == {
         "$and": [
             {"source_system": {"$eq": "plaid"}},
-            {"record_date": {"$gte": "2026-01-01"}},
-            {"record_date": {"$lte": "2026-01-31"}},
+            {"record_date": {"$in": ["2026-01-02 09:00:00"]}},
         ]
     }
 
@@ -195,3 +204,70 @@ def test_stats_returns_expected_shape(ready_client):
     body = resp.json()
     assert body["total_records"] == 3
     assert body["metric"] == "cosine"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"after": "not-a-date"},
+        {"before": "2026-02-30"},
+        {"after": "2026-02-01", "before": "2026-01-31"},
+        {"after": "2026-01-01T00:00:00Z"},
+    ],
+)
+def test_search_invalid_date_range_is_422(ready_client, params):
+    client, state = ready_client
+    response = client.get(
+        "/api/search",
+        params={"q": "coffee", **params},
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert response.status_code == 422
+    assert state.collection.last_query_kwargs is None
+
+
+def test_date_filter_works_on_real_chroma_and_includes_the_whole_end_date(
+    ready_client, tmp_path
+):
+    import chromadb
+    from chromadb.config import Settings
+
+    client, state = ready_client
+    vectors = chromadb.PersistentClient(
+        path=str(tmp_path / "vectors"), settings=Settings(anonymized_telemetry=False)
+    ).create_collection("date-regression", metadata={"hnsw:space": "cosine"})
+    vectors.upsert(
+        ids=["jan-start", "jan-end", "feb", "calendar"],
+        embeddings=[[0.1, 0.2, 0.3]] * 4,
+        documents=["coffee"] * 4,
+        metadatas=[
+            {"record_date": "2026-01-01 00:00:00", "source_system": "plaid"},
+            {"record_date": "2026-01-31 23:59:59.999999", "source_system": "plaid"},
+            {"record_date": "2026-02-01 00:00:00", "source_system": "plaid"},
+            {"record_date": "2026-01-15 12:00:00", "source_system": "calendar"},
+        ],
+    )
+    state.collection = vectors
+    response = client.get(
+        "/api/search",
+        params={
+            "q": "coffee",
+            "source": "plaid",
+            "after": "2026-01-01",
+            "before": "2026-01-31",
+        },
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert response.status_code == 200
+    assert {row["row_id"] for row in response.json()["results"]} == {
+        "jan-start",
+        "jan-end",
+    }
+
+    empty = client.get(
+        "/api/search",
+        params={"q": "coffee", "before": "2025-01-01"},
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["results"] == []

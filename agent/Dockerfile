@@ -11,10 +11,12 @@ RUN npm ci
 
 COPY agent/ agent/
 RUN npm run build --workspace agent
+RUN npm prune --omit=dev
 
 FROM node:22-slim AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
 
 # npm workspaces hoists agent's dependencies into the root node_modules —
 # preserve that same relative layout (agent/ alongside root node_modules)
@@ -23,6 +25,12 @@ ENV NODE_ENV=production
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/agent/package.json ./agent/package.json
 COPY --from=build /repo/agent/dist ./agent/dist
+COPY --from=build /repo/agent/evals/reports ./agent/evals/reports
+
+# The non-root runtime writes traces here locally; deploys can mount a
+# persistent directory and override RAW_DATA_ROOT.
+RUN mkdir -p /repo/raw_data && chown node:node /repo/raw_data
+ENV RAW_DATA_ROOT=/repo/raw_data
 
 WORKDIR /repo/agent
 EXPOSE 8787

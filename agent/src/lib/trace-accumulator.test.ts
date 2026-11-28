@@ -57,7 +57,7 @@ describe("buildTraceRecord", () => {
     const record = buildTraceRecord(events, "q");
     expect(record.errored).toBe(true);
     expect(record.error_message).toContain("authentication_error");
-    expect(record.stop_reason).toBe("unknown"); // no done event arrived
+    expect(record.stop_reason).toBe("error");
   });
 
   it("aggregates multiple tool calls across iterations", () => {
@@ -76,5 +76,63 @@ describe("buildTraceRecord", () => {
   it("falls back to 'unknown' trace_id when no event carries one (defensive, shouldn't happen in practice)", () => {
     const record = buildTraceRecord([], "q");
     expect(record.trace_id).toBe("unknown");
+  });
+
+  it("preserves confirmed usage and attempted iterations when a later model request fails", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 400, isError: false,
+        usage: { inputTokens: 1000, outputTokens: 200, cacheCreationInputTokens: 1000, cacheReadInputTokens: 0 } },
+      { type: "span_start", traceId: "t1", spanId: "llm2", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm2", spanType: "llm_call", durationMs: 300, isError: false,
+        usage: { inputTokens: 100, outputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 8000 } },
+      { type: "span_start", traceId: "t1", spanId: "llm3", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm3", spanType: "llm_call", durationMs: 200, isError: true },
+      { type: "error", traceId: "t1", message: "Request aborted", fatal: true },
+    ];
+    const record = buildTraceRecord(events, "q");
+    expect(record).toMatchObject({
+      errored: true, stop_reason: "error", iterations: 3, error_message: "Request aborted",
+      input_tokens: 1100, output_tokens: 300, cache_creation_input_tokens: 1000,
+      cache_read_input_tokens: 8000, cost_usd: 0.01395, total_duration_ms: 900,
+    });
+  });
+
+  it("records the turn's first-token time from done", () => {
+    const done = DONE();
+    if (done.type === "done") done.timeToFirstTokenMs = 412;
+    expect(buildTraceRecord([done], "q").time_to_first_token_ms).toBe(412);
+  });
+
+  it("estimates first-token time from closed spans when a turn has no done event", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 800, isError: false },
+      { type: "span_end", traceId: "t1", spanId: "tool1", spanType: "tool_exec", durationMs: 200, isError: false },
+      { type: "span_end", traceId: "t1", spanId: "llm2", spanType: "llm_call", durationMs: 500, isError: true, timeToFirstTokenMs: 150 },
+      { type: "error", traceId: "t1", message: "Client disconnected", fatal: true, code: "client_aborted" },
+    ];
+    expect(buildTraceRecord(events, "q").time_to_first_token_ms).toBe(1150);
+  });
+
+  it("records a disconnected turn as client_aborted, not as a generic error", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 200, isError: true },
+      { type: "error", traceId: "t1", message: "Client disconnected", fatal: true, code: "client_aborted" },
+    ];
+    expect(buildTraceRecord(events, "q")).toMatchObject({ stop_reason: "client_aborted", iterations: 1, errored: true });
+  });
+
+  it("uses authoritative done totals without double-counting span fallback usage", () => {
+    const events: AgentStreamEvent[] = [
+      { type: "span_start", traceId: "t1", spanId: "llm1", spanType: "llm_call" },
+      { type: "span_end", traceId: "t1", spanId: "llm1", spanType: "llm_call", durationMs: 400, isError: false,
+        usage: { inputTokens: 500, outputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 400 } },
+      DONE(),
+    ];
+    expect(buildTraceRecord(events, "q")).toMatchObject({
+      input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 400,
+      cost_usd: 0.005, total_duration_ms: 1200, iterations: 2, stop_reason: "end_turn",
+    });
   });
 });

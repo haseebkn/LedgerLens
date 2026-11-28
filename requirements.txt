@@ -19,7 +19,15 @@ pydantic>=2.6.1
 pydantic-settings>=2.4.0
 
 # Data Transformation
-dbt-duckdb>=1.7.0
+# Pinned exactly. The Python and Node DuckDB builds must read the same
+# warehouse file format: an unpinned dbt-duckdb pulled duckdb 2.x, whose
+# file the agent's @duckdb/node-api 1.4.1 cannot open (13 agent tests
+# failed). Bump duckdb here and @duckdb/node-api in agent/package.json
+# together. duckdb 1.4.1 has no Python 3.14 wheel; use Python 3.11 (as CI
+# does) or 3.12/3.13.
+dbt-core==1.12.7
+dbt-duckdb==1.11.1
+duckdb==1.4.1
 
 # AWS S3 Storage Integration
 boto3>=1.34.0

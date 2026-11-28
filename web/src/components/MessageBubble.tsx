@@ -22,10 +22,14 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           </p>
         )}
 
-        {message.content && <MessageText text={message.content} />}
+        {message.content && <MessageText text={message.content} warnings={message.citationWarnings} />}
 
         {message.status === "streaming" && (message.content || message.toolTimeline.length > 0) && (
           <span className="stream-cursor" aria-hidden />
+        )}
+
+        {message.status === "stopped" && (
+          <p className="message-text message-text--stopped">Stopped</p>
         )}
 
         {message.status === "error" && (
@@ -62,6 +66,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
                 <dd>{message.usage.cacheReadInputTokens}</dd>
                 <dt>Cost</dt>
                 <dd>{formatUsd(message.usage.estimatedCostUsd)}</dd>
+                {typeof message.timeToFirstTokenMs === "number" && (
+                  <>
+                    <dt>First token</dt>
+                    <dd>{message.timeToFirstTokenMs} ms</dd>
+                  </>
+                )}
               </dl>
             )}
           </div>

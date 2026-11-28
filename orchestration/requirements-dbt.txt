@@ -1,0 +1,6 @@
+# Generic-test `arguments:` syntax requires Core 1.10.6+.
+dbt-core>=1.10.6,<1.11.0
+dbt-duckdb>=1.10.0,<1.11.0
+# Must match the agent's @duckdb/node-api (1.4.1) so both read the same
+# warehouse file format; dbt-duckdb alone would resolve duckdb 2.x.
+duckdb==1.4.1

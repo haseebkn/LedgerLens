@@ -69,10 +69,21 @@ export interface CaseResult {
   citationsValid: boolean;
 }
 
+export interface EvalRunMetadata {
+  /** Changes to case questions, expectations, or rubrics invalidate a baseline comparison. */
+  goldenSetHash: string;
+  scorerVersion: string;
+  judgeN: number;
+  scope: "full" | "partial";
+  costScope: "agent_only";
+  latencyScope: "agent_only";
+}
+
 export interface EvalReport {
   runAt: string;
   model: string;
   totalCases: number;
+  metadata?: EvalRunMetadata;
   categoryBreakdown: Record<
     GoldenCase["category"],
     { count: number; toolChoiceAccuracy: number; meanRecall: number; meanJudgeScore: number; meanJudgeSpread: number }

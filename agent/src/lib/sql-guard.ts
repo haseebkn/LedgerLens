@@ -2,13 +2,12 @@ import pkg from "node-sql-parser";
 const { Parser } = pkg;
 
 /**
- * Validates and sanitizes SQL before it ever reaches DuckDB. This is the
- * defense-in-depth layer behind the query_warehouse tool: the DuckDB
- * connection is also opened READ_ONLY (see lib/duckdb.ts), but READ_ONLY
- * only blocks writes — it does NOT block DuckDB's file-reading table
- * functions (read_csv_auto, read_json_auto, ...), which can read arbitrary
- * local files regardless of read-only mode. That gap is why the function
- * blocklist below exists alongside the table allowlist, not instead of it.
+ * Validates SQL before it reaches DuckDB and turns mistakes into repair
+ * guidance the model can act on. This is a helpful error layer, NOT the
+ * security boundary: the engine itself is sandboxed in lib/duckdb.ts
+ * (READ_ONLY, enable_external_access=false, locked configuration), which is
+ * what stops file/HTTP reads even if a query slips past these checks — e.g.
+ * a query() call whose target SQL is assembled from split strings.
  */
 
 const parser = new Parser();
@@ -60,10 +59,93 @@ function extractTableRefs(sql: string): string[] {
   });
 }
 
+type AstNode = Record<string, unknown>;
+
+function isNode(value: unknown): value is AstNode {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Validate every SELECT in its own CTE scope, including subqueries and UNION branches. */
+function inspectAst(value: unknown, outerCtes: ReadonlySet<string> = new Set()): string | undefined {
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const reason = inspectAst(child, outerCtes);
+      if (reason) return reason;
+    }
+    return;
+  }
+  if (!isNode(value)) return;
+
+  const ctes = new Set(outerCtes);
+  if (value.type === "select") {
+    if (Array.isArray(value.with)) {
+      for (const cte of value.with) {
+        if (!isNode(cte) || !isNode(cte.name) || typeof cte.name.value !== "string") {
+          return "Could not determine a CTE name.";
+        }
+        if (cte.recursive) return "Recursive CTEs are not permitted; use a bounded warehouse SELECT.";
+        // A non-recursive definition can see earlier CTEs, but not itself
+        // or later siblings. DuckDB may bind those names to physical tables.
+        const reason = inspectAst(cte.stmt, ctes);
+        if (reason) return reason;
+        ctes.add(cte.name.value.toLowerCase());
+      }
+    }
+    if (Array.isArray(value.from)) {
+      for (const ref of value.from) {
+        if (!isNode(ref)) return "Could not determine a referenced table.";
+        if (typeof ref.table === "string") {
+          if (!ref.db && !ctes.has(ref.table.toLowerCase())) {
+            return `Query references table(s) not in the allowed set: ${ref.table}. Use a schema-qualified warehouse table or a declared CTE.`;
+          }
+        } else if (!isNode(ref.expr) || !isNode(ref.expr.ast)) {
+          // query(), query_table(), and catalog table functions do not appear
+          // in tableList(). Reject table functions instead of guessing their targets.
+          return "Query references a disallowed function in FROM. Only warehouse tables and SELECT subqueries are permitted.";
+        }
+      }
+    }
+    if (isNode(value.limit) && Array.isArray(value.limit.value)) {
+      for (const bound of value.limit.value) {
+        if (!isNode(bound) || bound.type !== "number" || !Number.isSafeInteger(bound.value) || Number(bound.value) < 0) {
+          return "LIMIT and OFFSET must be non-negative integer literals; unbounded or calculated limits are not permitted.";
+        }
+        if (Number(bound.value) > MAX_ROW_LIMIT) {
+          return `LIMIT or OFFSET ${bound.value} exceeds the maximum of ${MAX_ROW_LIMIT} rows. Lower the bound or aggregate instead.`;
+        }
+      }
+    }
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (value.type === "select" && key === "with") continue;
+    const reason = inspectAst(child, ctes);
+    if (reason) return reason;
+  }
+}
+
+function hasExplicitLimit(stmt: AstNode): boolean {
+  // node-sql-parser attaches a compound query's final LIMIT to its last branch.
+  let last = stmt;
+  while (isNode(last._next)) last = last._next;
+  const limit = last.limit;
+  if (!isNode(limit) || !Array.isArray(limit.value) || limit.value.length === 0) return false;
+  return !(limit.seperator === "offset" && limit.value.length === 1);
+}
+
+/**
+ * Blanks string literals so the function blocklist only sees SQL, not data.
+ * Without this, a search for '%installment%', '%global%' or '%important%'
+ * was rejected as if it called install/glob/import. Calls such as
+ * read_text('x') are still caught: the function name is outside the quotes.
+ */
+export function blankStringLiterals(sql: string): string {
+  return sql.replace(/'(?:[^']|'')*'/g, "''");
+}
+
 export function guardSql(sqlInput: string): GuardResult {
   const sql = sqlInput.trim().replace(/;+\s*$/g, ""); // tolerate one trailing semicolon
 
-  if (BANNED_PATTERN.test(sql)) {
+  if (BANNED_PATTERN.test(blankStringLiterals(sql))) {
     return {
       ok: false,
       reason:
@@ -92,6 +174,9 @@ export function guardSql(sqlInput: string): GuardResult {
     };
   }
 
+  const astReason = inspectAst(stmt);
+  if (astReason) return { ok: false, reason: astReason };
+
   let tableRefs: string[];
   try {
     tableRefs = extractTableRefs(sql);
@@ -99,9 +184,8 @@ export function guardSql(sqlInput: string): GuardResult {
     return { ok: false, reason: `Could not determine referenced tables: ${(e as Error).message.split("\n")[0]}` };
   }
 
-  // CTE aliases surface with schema "null" -> unqualified name; drop those
-  // from the allowlist check since they're not real tables, then require
-  // at least one *real* qualified table remains and every one is allowed.
+  // inspectAst has already verified that each unqualified reference resolves
+  // to a CTE in that SELECT's scope. Check the remaining physical tables here.
   const realTableRefs = tableRefs.filter((t) => t.includes("."));
   if (realTableRefs.length === 0) {
     return {
@@ -121,7 +205,7 @@ export function guardSql(sqlInput: string): GuardResult {
     };
   }
 
-  const hasLimit = Array.isArray((stmt as any).limit?.value) && (stmt as any).limit.value.length > 0;
+  const hasLimit = hasExplicitLimit(stmt as unknown as AstNode);
   let finalSql = sql;
   if (!hasLimit) {
     // Append on a NEW LINE, not with a space. A query ending in a `--`
@@ -132,14 +216,6 @@ export function guardSql(sqlInput: string): GuardResult {
     // returned 500 rows returned 8836. A line comment ends at the newline,
     // so this placement keeps the LIMIT outside it in every case.
     finalSql = `${sql}\nLIMIT ${DEFAULT_ROW_LIMIT}`;
-  } else {
-    const limitValue = (stmt as any).limit.value[(stmt as any).limit.value.length - 1]?.value;
-    if (typeof limitValue === "number" && limitValue > MAX_ROW_LIMIT) {
-      return {
-        ok: false,
-        reason: `LIMIT ${limitValue} exceeds the maximum of ${MAX_ROW_LIMIT} rows. Lower the LIMIT or aggregate instead.`,
-      };
-    }
   }
 
   return { ok: true, sql: finalSql };

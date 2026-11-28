@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useAgentChat } from "../hooks/useAgentChat.js";
+import { MAX_MESSAGE_CHARS, useAgentChat } from "../hooks/useAgentChat.js";
 import { MessageBubble } from "./MessageBubble.js";
+import { SourceDrawerProvider } from "./SourceDrawer.js";
 
 const SUGGESTIONS = [
   "How much did I spend on Food and Drink?",
@@ -10,7 +11,7 @@ const SUGGESTIONS = [
 ];
 
 export function ChatView() {
-  const { messages, isStreaming, send } = useAgentChat();
+  const { messages, isStreaming, send, stop } = useAgentChat();
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -26,8 +27,9 @@ export function ChatView() {
   };
 
   return (
+    <SourceDrawerProvider>
     <div className="chat-view">
-      <div className="chat-scroll">
+      <div className="chat-scroll" role="log" aria-label="Conversation" aria-live="polite" aria-busy={isStreaming}>
         {messages.length === 0 && (
           <div className="chat-empty">
             <p>Ask about your transactions, calendar events, or account balance.</p>
@@ -60,11 +62,15 @@ export function ChatView() {
           placeholder="Ask about your finances…"
           disabled={isStreaming}
           aria-label="Message"
+          maxLength={MAX_MESSAGE_CHARS}
         />
-        <button type="submit" className="chat-send" disabled={isStreaming || !input.trim()}>
-          {isStreaming ? "…" : "Send"}
-        </button>
+        {isStreaming ? (
+          <button type="button" className="chat-send" onClick={stop}>Stop</button>
+        ) : (
+          <button type="submit" className="chat-send" disabled={!input.trim()}>Send</button>
+        )}
       </form>
     </div>
+    </SourceDrawerProvider>
   );
 }

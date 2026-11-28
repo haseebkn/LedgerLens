@@ -24,6 +24,8 @@ def main():
 
     # Initialize landing zone file writer
     writer = RawFileWriter(base_dir=settings.raw_data_dir)
+    completed_sources = []
+    failed_sources = []
 
     # 1. Google Calendar Extraction
     if os.path.exists(settings.google_application_credentials):
@@ -35,8 +37,10 @@ def main():
                     source="google_calendar", resource="events", payload=response_page
                 )
             logger.info("Google Calendar Ingestion Complete.")
+            completed_sources.append("google_calendar")
         except Exception as e:
             logger.error("Google Calendar Ingestion failed", error=str(e))
+            failed_sources.append("google_calendar")
     else:
         logger.warning(
             "Skipping Google Calendar Extraction: Credentials file not found. "
@@ -55,8 +59,10 @@ def main():
                     payload=dataset["data"],
                 )
             logger.info("Alpaca Markets Ingestion Complete.")
+            completed_sources.append("alpaca")
         except Exception as e:
             logger.error("Alpaca Ingestion failed", error=str(e))
+            failed_sources.append("alpaca")
     else:
         logger.warning(
             "Skipping Alpaca Ingestion: ALPACA_API_KEY_ID or ALPACA_API_SECRET_KEY environment variables not set."
@@ -78,15 +84,23 @@ def main():
                     payload=dataset["data"],
                 )
             logger.info("Plaid Ingestion Complete.")
+            completed_sources.append("plaid")
         except Exception as e:
             logger.error("Plaid Ingestion failed", error=str(e))
+            failed_sources.append("plaid")
     else:
         logger.warning(
             "Skipping Plaid Ingestion: PLAID_CLIENT_ID, PLAID_SECRET, or PLAID_ACCESS_TOKEN "
             "environment variables not set."
         )
 
-    logger.info("Phase 1 Extraction Run execution completed.")
+    if failed_sources:
+        raise RuntimeError("Extraction failed for: " + ", ".join(failed_sources))
+    if not completed_sources:
+        raise RuntimeError("No extraction sources are configured; no ingestion ran.")
+    logger.info(
+        "Phase 1 Extraction Run execution completed.", sources=completed_sources
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+import { describe, expect, it } from "vitest";
+import { parseEnv } from "./config.js";
+
+const required = { ANTHROPIC_API_KEY: "test-key", RETRIEVAL_SERVICE_TOKEN: "test-token" };
+
+describe("service configuration", () => {
+  it("keeps local launches on loopback and permits an explicit container bind", () => {
+    const local = parseEnv(required);
+    expect(local.success && local.data.HOST).toBe("127.0.0.1");
+    const container = parseEnv({ ...required, HOST: "0.0.0.0", PORT: "9000" });
+    expect(container.success && container.data.HOST).toBe("0.0.0.0");
+    expect(container.success && container.data.PORT).toBe(9000);
+  });
+
+  it.each(["0", "-1", "65536", "not-a-port"])("rejects invalid port %s before boot", (PORT) => {
+    expect(parseEnv({ ...required, PORT }).success).toBe(false);
+  });
+});

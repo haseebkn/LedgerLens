@@ -19,12 +19,16 @@ export interface TraceRecord {
   errored: boolean;
   error_message: string | null;
   citations_valid: boolean;
+  /** Dollar figures the numeric grounding check could not tie to a citation. */
+  citation_warnings: number;
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
   cost_usd: number;
   total_duration_ms: number;
+  /** Turn start to first model text; null when the model wrote no text. */
+  time_to_first_token_ms: number | null;
   tool_calls: { name: string; duration_ms: number; is_error: boolean }[];
 }
 

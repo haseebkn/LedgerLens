@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod/v4";
 import { env } from "../../src/config.js";
 import type { GoldenCase } from "../types.js";
 
@@ -44,6 +45,17 @@ export interface JudgeResult {
   explanation: string;
 }
 
+const JudgmentSchema = z.object({
+  score: z.number().int().min(1).max(5),
+  citations_valid: z.boolean(),
+  explanation: z.string().min(1),
+}).strict();
+
+export function parseJudgment(input: unknown): JudgeResult {
+  const validated = JudgmentSchema.parse(input);
+  return { score: validated.score, citationsValid: validated.citations_valid, explanation: validated.explanation };
+}
+
 /** Scores one answer against its case's rubric using Claude as judge, forced into structured output via tool_choice. */
 export async function judgeSingle(goldenCase: GoldenCase, answerText: string): Promise<JudgeResult> {
   const response = await client.messages.create({
@@ -63,12 +75,11 @@ export async function judgeSingle(goldenCase: GoldenCase, answerText: string): P
     ],
   });
 
-  const toolUse = response.content.find((b) => b.type === "tool_use");
+  const toolUse = response.content.find((b) => b.type === "tool_use" && b.name === "submit_judgment");
   if (!toolUse || toolUse.type !== "tool_use") {
     throw new Error("Judge did not return a tool_use block — cannot extract a structured score.");
   }
-  const input = toolUse.input as { score: number; citations_valid: boolean; explanation: string };
-  return { score: input.score, citationsValid: input.citations_valid, explanation: input.explanation };
+  return parseJudgment(toolUse.input);
 }
 
 /**
@@ -82,6 +93,7 @@ export async function judgeWithSpread(
   answerText: string,
   n = 3
 ): Promise<{ meanScore: number; spread: number; citationsValid: boolean; explanation: string }> {
+  if (!Number.isInteger(n) || n < 1) throw new Error("Judge sample count must be a positive integer");
   const runs = await Promise.all(Array.from({ length: n }, () => judgeSingle(goldenCase, answerText)));
   const scores = runs.map((r) => r.score);
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;

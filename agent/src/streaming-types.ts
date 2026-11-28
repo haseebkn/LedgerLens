@@ -51,6 +51,8 @@ export interface SpanEndEvent extends TraceMeta {
   spanType: SpanType;
   durationMs: number;
   isError: boolean;
+  /** llm_call spans that produced text: ms from the span's start to its first text delta. */
+  timeToFirstTokenMs?: number;
   /** Populated only on llm_call spans — this request's own usage, not cumulative. */
   usage?: {
     inputTokens: number;
@@ -66,6 +68,20 @@ export interface CitationEvent extends TraceMeta {
   source: string;
 }
 
+/**
+ * A dollar figure or record count in the final answer that its sentence's
+ * citations don't support: either nothing is cited, or no cited row/result
+ * contains it.
+ */
+export interface CitationWarningEvent extends TraceMeta {
+  type: "citation_warning";
+  figure: string;
+  kind: "amount" | "count";
+  sentence: string;
+  reason: "uncited" | "not_in_source";
+  citedIds: string[];
+}
+
 export interface TextCorrectionEvent extends TraceMeta {
   type: "text_correction";
   /** Replaces the text streamed so far — issued when citation repair rewrites the answer. */
@@ -78,6 +94,8 @@ export interface ErrorEvent extends TraceMeta {
   message: string;
   /** Set when the loop can't continue (vs. a tool-level error it can recover from). */
   fatal: boolean;
+  /** Machine-readable class, e.g. "client_aborted" when the browser left mid-turn. */
+  code?: "client_aborted";
 }
 
 export interface UsageSummary {
@@ -93,6 +111,8 @@ export interface DoneEvent extends TraceMeta {
   stopReason: string;
   usage: UsageSummary;
   totalDurationMs: number;
+  /** ms from the start of the turn to the first model text; null if the model wrote none. */
+  timeToFirstTokenMs?: number | null;
   /** Number of LLM-call iterations in the tool-use loop (bounded by MAX_TOOL_ITERATIONS). */
   iterations: number;
   /** Whether the citation repair pass fired and changed the answer. */
@@ -107,6 +127,7 @@ export type AgentStreamEvent =
   | ToolCallEvent
   | ToolResultEvent
   | CitationEvent
+  | CitationWarningEvent
   | TextCorrectionEvent
   | ErrorEvent
   | DoneEvent;

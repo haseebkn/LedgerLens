@@ -4,7 +4,7 @@ financial_context_engine:
     dev:
       type: duckdb
       # Local DuckDB database file written to the project root directory
-      path: '../financial_engine.db'
+      path: "{{ env_var('DUCKDB_PATH', '../financial_engine.db') }}"
       threads: 4
       
       # Optional settings for DuckDB configurations

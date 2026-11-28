@@ -14,6 +14,8 @@ function makeRecord(overrides: Partial<TraceRecord> = {}): TraceRecord {
     errored: false,
     error_message: null,
     citations_valid: true,
+    citation_warnings: 0,
+    time_to_first_token_ms: 350,
     input_tokens: 500,
     output_tokens: 100,
     cache_creation_input_tokens: 0,

@@ -32,4 +32,18 @@ describe("getLatestEvalReport", () => {
     const report = getLatestEvalReport(dir) as { runAt: string };
     expect(report.runAt).toBe("the-one");
   });
+
+  it("keeps the last readable report available if the newest write is incomplete", () => {
+    const dir = mkdtempSync(join(tmpdir(), "evals-partial-"));
+    writeFileSync(join(dir, "2026-01-01.json"), JSON.stringify({ runAt: "complete" }));
+    writeFileSync(join(dir, "2026-01-02.json"), '{"runAt":');
+    expect(getLatestEvalReport(dir)).toEqual({ runAt: "complete" });
+  });
+
+  it("returns null when no usable report exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "evals-invalid-"));
+    writeFileSync(join(dir, "2026-01-01.json"), "null");
+    writeFileSync(join(dir, "2026-01-02.json"), "{");
+    expect(getLatestEvalReport(dir)).toBeNull();
+  });
 });

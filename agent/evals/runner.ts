@@ -23,6 +23,7 @@ export async function runEvalCase(
   const agentTurn = options.agentTurn ?? runAgentTurn;
   const judgeWithSpread = options.judge ?? realJudgeWithSpread;
   const judgeN = options.judgeN ?? 3;
+  if (!Number.isInteger(judgeN) || judgeN < 1) throw new Error("judgeN must be a positive integer");
 
   const toolCalls: string[] = [];
   const seenRowIds = new Set<string>();
@@ -30,10 +31,12 @@ export async function runEvalCase(
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
+  let durationMs: number | undefined;
+  let completed = false;
   const startedAt = Date.now();
 
   try {
-    for await (const event of agentTurn({ history: [], userMessage: goldenCase.question })) {
+    turn: for await (const event of agentTurn({ history: [], userMessage: goldenCase.question })) {
       switch (event.type) {
         case "tool_call":
           toolCalls.push(event.name);
@@ -48,6 +51,7 @@ export async function runEvalCase(
           answerText = event.text;
           break;
         case "tool_result":
+          if (event.isError) break;
           for (const match of event.summary.matchAll(/\b((?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]+)\b/g)) {
             seenRowIds.add(match[1]!);
           }
@@ -80,15 +84,18 @@ export async function runEvalCase(
           inputTokens = event.usage.inputTokens;
           outputTokens = event.usage.outputTokens;
           costUsd = event.usage.estimatedCostUsd;
-          break;
+          durationMs = event.totalDurationMs;
+          completed = true;
+          break turn;
       }
     }
+    if (!completed) throw new Error("Agent stream ended without a completion event.");
   } catch (e) {
     return {
       id: goldenCase.id,
       category: goldenCase.category,
       question: goldenCase.question,
-      answerText: "",
+      answerText,
       toolCalls,
       seenRowIds: [...seenRowIds],
       errored: true,
@@ -108,7 +115,34 @@ export async function runEvalCase(
 
   const toolChoiceScore = scoreToolChoice(goldenCase, toolCalls);
   const recallScore = scoreRetrievalRecall(goldenCase, [...seenRowIds]);
-  const judged = await judgeWithSpread(goldenCase, answerText, judgeN);
+  // The completion event measures the user-facing agent turn. Judge latency
+  // belongs to the harness and must not inflate the advertised agent latency.
+  const agentDurationMs = durationMs ?? Date.now() - startedAt;
+  let judged: Awaited<ReturnType<JudgeFn>>;
+  try {
+    judged = await judgeWithSpread(goldenCase, answerText, judgeN);
+  } catch (error) {
+    return {
+      id: goldenCase.id,
+      category: goldenCase.category,
+      question: goldenCase.question,
+      answerText,
+      toolCalls,
+      seenRowIds: [...seenRowIds],
+      errored: true,
+      errorMessage: `Judge failed: ${error instanceof Error ? error.message : String(error)}`,
+      durationMs: agentDurationMs,
+      inputTokens,
+      outputTokens,
+      costUsd,
+      toolChoiceScore,
+      recallScore,
+      judgeScore: 0,
+      judgeSpread: 0,
+      judgeExplanation: "Judge failed; this case has no valid judge score.",
+      citationsValid: false,
+    };
+  }
 
   return {
     id: goldenCase.id,
@@ -118,7 +152,7 @@ export async function runEvalCase(
     toolCalls,
     seenRowIds: [...seenRowIds],
     errored: false,
-    durationMs: Date.now() - startedAt,
+    durationMs: agentDurationMs,
     inputTokens,
     outputTokens,
     costUsd,
@@ -137,6 +171,7 @@ export async function runEvalSuite(
   options: { concurrency?: number; judgeN?: number; agentTurn?: AgentTurnFn; judge?: JudgeFn } = {}
 ): Promise<CaseResult[]> {
   const concurrency = options.concurrency ?? 4;
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("concurrency must be a positive integer");
   const results: CaseResult[] = new Array(cases.length);
   let nextIndex = 0;
 

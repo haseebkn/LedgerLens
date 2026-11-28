@@ -18,6 +18,7 @@ app.
 import secrets
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -144,26 +145,78 @@ def get_stats(
 
 
 def _build_where(
-    source: str | None, after: str | None, before: str | None
-) -> dict | None:
+    source: str | None, after: str | None, before: str | None, collection
+) -> tuple[dict | None, bool]:
     """
-    Builds a Chroma `where` filter from optional source/date-range params.
-    record_date is stored as a string cast of a TIMESTAMP (YYYY-MM-DD HH:MM:SS),
-    which sorts correctly under lexicographic $gte/$lte comparison.
+    Build a supported Chroma filter, including existing string date metadata.
+
+    Chroma's inequality operators only accept numbers, not timestamp strings.
+    Resolve the eligible date values first, then filter with $in before vector
+    ranking. This preserves recall and works on stores created before this fix.
+    Returns (where, has_candidates); an empty $in list is invalid in Chroma.
     """
     clauses: list[dict] = []
     if source:
         clauses.append({"source_system": {"$eq": source}})
-    if after:
-        clauses.append({"record_date": {"$gte": after}})
-    if before:
-        clauses.append({"record_date": {"$lte": before}})
+    if after is not None or before is not None:
+        try:
+            lower = datetime.fromisoformat(after) if after is not None else None
+            upper = datetime.fromisoformat(before) if before is not None else None
+            # record_date stores warehouse wall-clock timestamps without zones.
+            if any(bound and bound.tzinfo for bound in (lower, upper)):
+                raise ValueError("Use dates or timestamps without a timezone.")
+            upper_exclusive = before is not None and len(before) == 10
+            if upper is not None and upper_exclusive:
+                upper += timedelta(days=1)
+            if (
+                lower is not None
+                and upper is not None
+                and (lower > upper or (upper_exclusive and lower == upper))
+            ):
+                raise ValueError("after must not be later than before.")
+        except (ValueError, OverflowError) as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid date range: {exc}"
+            ) from exc
+
+        matching_dates: set[str] = set()
+        offset = 0
+        while True:
+            page = collection.get(
+                where=clauses[0] if clauses else None,
+                include=["metadatas"],
+                limit=1000,
+                offset=offset,
+            )
+            for metadata in page["metadatas"]:
+                value = (metadata or {}).get("record_date")
+                if not isinstance(value, str):
+                    continue
+                try:
+                    record_date = datetime.fromisoformat(value)
+                except (TypeError, ValueError):
+                    continue
+                if record_date.tzinfo is not None:
+                    continue
+                if lower is not None and record_date < lower:
+                    continue
+                if upper is not None and (
+                    record_date >= upper if upper_exclusive else record_date > upper
+                ):
+                    continue
+                matching_dates.add(value)
+            if len(page["ids"]) < 1000:
+                break
+            offset += 1000
+        if not matching_dates:
+            return None, False
+        clauses.append({"record_date": {"$in": sorted(matching_dates)}})
 
     if not clauses:
-        return None
+        return None, True
     if len(clauses) == 1:
-        return clauses[0]
-    return {"$and": clauses}
+        return clauses[0], True
+    return {"$and": clauses}, True
 
 
 @app.get("/api/search")
@@ -179,7 +232,7 @@ def search(
     ),
     before: str | None = Query(
         None,
-        description="Only rows with record_date <= this value (YYYY-MM-DD[ HH:MM:SS]).",
+        description="Inclusive end date or timestamp (YYYY-MM-DD[ HH:MM:SS]).",
     ),
     _auth: None = Depends(require_auth),
     state: ServiceState = Depends(require_ready),
@@ -193,6 +246,10 @@ def search(
         before=before,
     )
 
+    where, has_candidates = _build_where(source, after, before, state.collection)
+    if not has_candidates:
+        return {"query": q, "results": []}
+
     # require_ready() guarantees state.ready (model is not None); assert
     # narrows the type for mypy and doubles as a cheap runtime safety net.
     assert state.model is not None
@@ -200,7 +257,6 @@ def search(
     # which lacks .tolist() — with default params (no convert_to_tensor) it
     # always returns an ndarray at runtime, which does have it.
     query_vector = state.model.encode([q], normalize_embeddings=True).tolist()  # type: ignore[union-attr]
-    where = _build_where(source, after, before)
 
     results = state.collection.query(
         query_embeddings=query_vector,

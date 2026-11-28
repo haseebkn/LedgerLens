@@ -9,7 +9,7 @@ export default defineConfig({
     // a real key; see agent-loop.test.ts).
     env: {
       ANTHROPIC_API_KEY: "sk-ant-test-placeholder-not-a-real-key",
-      DUCKDB_PATH: "../financial_engine.db",
+      DUCKDB_PATH: process.env.DUCKDB_PATH ?? "../financial_engine.db",
       RETRIEVAL_SERVICE_URL: "http://127.0.0.1:8100",
       RETRIEVAL_SERVICE_TOKEN: "test-internal-token",
       // Redirects trace-writer.ts's default landing-zone path so route

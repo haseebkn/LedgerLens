@@ -13,14 +13,28 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
 const IDLE_RELEASE_MS = 2_000;
 
 /**
- * Lazily creates a read-only DuckDBInstance.
- * READ_ONLY is enforced at the connection level as defense-in-depth
- * alongside the SQL guard in lib/sql-guard.ts — even a guard bypass
- * can't write to the warehouse.
+ * Engine-level sandbox for every warehouse connection. This — not the regex
+ * and AST checks in lib/sql-guard.ts — is the security boundary:
+ * - READ_ONLY: no writes to the warehouse.
+ * - enable_external_access=false: no file, HTTP or extension reads, which
+ *   also closes query()/query_table() string-built bypasses of the guard
+ *   (e.g. query('SELECT * FROM read_' || 'text(''agent/.env'')')).
+ * - autoload/autoinstall off: no extension can be fetched or loaded.
+ * - lock_configuration=true: `SET enable_external_access = true` is refused,
+ *   so a query can't undo the lines above.
  */
+export const SANDBOX_CONFIG = {
+  access_mode: "READ_ONLY",
+  enable_external_access: "false",
+  autoload_known_extensions: "false",
+  autoinstall_known_extensions: "false",
+  lock_configuration: "true",
+} as const;
+
+/** Lazily creates the sandboxed, read-only DuckDBInstance. */
 function getInstance(): Promise<DuckDBInstance> {
   if (!instancePromise) {
-    instancePromise = DuckDBInstance.create(env.DUCKDB_PATH, { access_mode: "READ_ONLY" });
+    instancePromise = DuckDBInstance.create(env.DUCKDB_PATH, { ...SANDBOX_CONFIG });
   }
   return instancePromise;
 }

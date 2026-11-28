@@ -8,7 +8,11 @@ import duckdb
 import structlog
 import torch
 from sentence_transformers import SentenceTransformer
-from vector_client import LocalVectorClient
+
+if not __package__:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from vector_prep.vector_client import LocalVectorClient  # noqa: E402
 
 # Set up structured logging
 logger = structlog.get_logger(__name__)
@@ -84,7 +88,6 @@ def fetch_analytics_data(db_path: str):
         raise FileNotFoundError(f"Database not found at: {db_path}")
 
     try:
-        conn = duckdb.connect(db_path, read_only=True)
         # Select rows where summary_text is not null and not empty
         query = """
             SELECT 
@@ -95,8 +98,8 @@ def fetch_analytics_data(db_path: str):
             FROM main_analytics.fct_context_rows
             WHERE summary_text IS NOT NULL AND TRIM(summary_text) != '';
         """
-        df = conn.execute(query).fetch_df()
-        conn.close()
+        with duckdb.connect(db_path, read_only=True) as conn:
+            df = conn.execute(query).fetch_df()
         logger.info("Successfully fetched rows from DuckDB", rows_fetched=len(df))
         return df
     except Exception as e:
@@ -216,6 +219,26 @@ def vectorize_and_store(df, model, collection):
             raise
 
 
+def synchronize_collection(df, model, collection):
+    """Reconcile a complete warehouse snapshot, including removed records.
+
+    Only prune after every new/changed embedding has been saved successfully.
+    Snapshot all obsolete IDs before deleting: deleting while offset-paginating
+    would shift later pages and leave some stale records behind.
+    """
+    changed, stats = filter_changed_rows(df, collection)
+    vectorize_and_store(changed, model, collection)
+
+    live_ids = set(df["unique_id"])
+    obsolete = []
+    for offset in range(0, collection.count(), BATCH_SIZE):
+        page = collection.get(limit=BATCH_SIZE, offset=offset, include=[])
+        obsolete.extend(row_id for row_id in page["ids"] if row_id not in live_ids)
+    for offset in range(0, len(obsolete), BATCH_SIZE):
+        collection.delete(ids=obsolete[offset : offset + BATCH_SIZE])
+    return {**stats, "deleted": len(obsolete)}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compute embeddings and load them into ChromaDB."
@@ -251,24 +274,16 @@ def main():
         # 4. Fetch clean data from DuckDB
         df = fetch_analytics_data(DB_PATH)
 
-        # 5. Skip rows whose content hasn't changed since the last run
-        df, change_stats = filter_changed_rows(df, collection)
-        logger.info(
-            "Change detection complete",
-            rows_scanned=change_stats["scanned"],
-            rows_to_embed=change_stats["embedded"],
-            rows_skipped_unchanged=change_stats["skipped"],
-        )
-
-        # 6. Vectorize and Upsert to ChromaDB
+        # 5. Embed changes and remove records no longer in the warehouse.
         start_time = time.monotonic()
-        vectorize_and_store(df, model, collection)
+        change_stats = synchronize_collection(df, model, collection)
         elapsed = time.monotonic() - start_time
 
         logger.info(
             "Vectorization pipeline completed successfully!",
             rows_embedded=change_stats["embedded"],
             rows_skipped_unchanged=change_stats["skipped"],
+            rows_deleted=change_stats["deleted"],
             embed_seconds=round(elapsed, 2),
         )
 

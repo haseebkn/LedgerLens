@@ -12,9 +12,9 @@ import { runAgentTurn } from "./agent-loop.js";
  * exercised. Skip this test if you don't want a network call during CI.
  */
 describe("runAgentTurn (network smoke test — no real API key required)", () => {
-  // Skipped in CI: real network call to api.anthropic.com. Run locally with
-  // `npx vitest run src/agent-loop.smoke.test.ts` to exercise it.
-  it.skipIf(process.env.CI)("reaches the API and gets a structured auth error, not a local crash", async () => {
+  // Opt-in only: this contacts api.anthropic.com even with a placeholder key.
+  // Set RUN_NETWORK_SMOKE=1 explicitly to exercise it.
+  it.runIf(process.env.RUN_NETWORK_SMOKE === "1")("reaches the API and gets a structured auth error, not a local crash", async () => {
     const events = [];
     for await (const event of runAgentTurn({ history: [], userMessage: "What's my account balance?" })) {
       events.push(event);

@@ -143,4 +143,62 @@ describe("guardSql", () => {
     expect(result.ok).toBe(true);
     expect(result.sql!.split("\n").pop()).toBe("LIMIT 500");
   });
+
+  it.each([
+    "SELECT * FROM main_analytics.fct_context_rows, secret_table",
+    "SELECT * FROM main_analytics.fct_context_rows WHERE EXISTS (SELECT 1 FROM secret_table)",
+    "SELECT * FROM main_analytics.fct_context_rows UNION ALL SELECT * FROM secret_table",
+    "SELECT * FROM main_analytics.fct_context_rows, query_table('secret_table')",
+    "SELECT * FROM main_analytics.fct_context_rows, query('SELECT * FROM secret_table')",
+    "SELECT * FROM main_analytics.fct_context_rows, duckdb_settings()",
+    "WITH x AS (SELECT * FROM main_analytics.fct_context_rows) SELECT * FROM x, secret_table",
+    "SELECT * FROM secret_table WHERE EXISTS (WITH secret_table AS (SELECT * FROM main_analytics.fct_context_rows) SELECT * FROM secret_table)",
+    "WITH secret_table AS (SELECT * FROM secret_table CROSS JOIN main_analytics.fct_context_rows) SELECT * FROM secret_table",
+    "WITH first_cte AS (SELECT * FROM secret_table CROSS JOIN main_analytics.fct_context_rows), secret_table AS (SELECT * FROM main_analytics.fct_context_rows) SELECT * FROM first_cte",
+  ])("rejects hidden table access: %s", (sql) => {
+    expect(guardSql(sql).ok).toBe(false);
+  });
+
+  it.each(["ALL", "-1", "5000 OFFSET 1", "10 OFFSET 5000", "1.5"])(
+    "rejects an unbounded or invalid LIMIT/OFFSET: %s", (limit) => {
+      expect(guardSql(`SELECT * FROM main_analytics.fct_context_rows LIMIT ${limit}`).ok).toBe(false);
+    }
+  );
+
+  it("caps an OFFSET-only query instead of mistaking OFFSET for LIMIT", () => {
+    const result = guardSql("SELECT * FROM main_analytics.fct_context_rows OFFSET 1");
+    expect(result.ok).toBe(true);
+    expect(result.sql).toContain("LIMIT 500");
+  });
+
+  it("preserves a bounded UNION without appending a duplicate LIMIT", () => {
+    const sql = "SELECT * FROM main_analytics.fct_context_rows UNION ALL SELECT * FROM main_analytics.fct_context_rows LIMIT 10";
+    expect(guardSql(sql)).toEqual({ ok: true, sql });
+  });
+
+  it("allows a CTE definition to query an earlier sibling", () => {
+    expect(guardSql("WITH first_cte AS (SELECT * FROM main_analytics.fct_context_rows), second_cte AS (SELECT * FROM first_cte) SELECT * FROM second_cte").ok).toBe(true);
+  });
+
+  it("rejects recursive definitions whose physical-table binding cannot be established", () => {
+    expect(guardSql("WITH RECURSIVE x AS (SELECT * FROM main_analytics.fct_context_rows UNION ALL SELECT * FROM x) SELECT * FROM x").ok).toBe(false);
+  });
+});
+
+describe("guardSql string-literal handling", () => {
+  it.each(["%installment%", "%global%", "%important%", "%payload%"])(
+    "allows an ILIKE search for a word containing a banned keyword: %s",
+    (term) => {
+      const result = guardSql(`SELECT row_id FROM main_analytics.fct_context_rows WHERE summary_text ILIKE '${term}'`);
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it("still rejects a file-reading call whose argument is a string literal", () => {
+    expect(guardSql("SELECT * FROM read_text('agent/.env')").ok).toBe(false);
+  });
+
+  it("does not let an escaped quote hide a banned call", () => {
+    expect(guardSql("SELECT 'it''s' AS a, * FROM read_text('x')").ok).toBe(false);
+  });
 });

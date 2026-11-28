@@ -32,6 +32,12 @@ dist/
 logs/
 *.log
 target/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.test-raw-data/
+.demo/
+/tmp/airflow-recovery/
 dbt_packages/
 
 # IDE & system files
@@ -48,4 +54,3 @@ infra/**/*.tfstate.*
 infra/**/*.tfplan
 infra/**/terraform.tfvars
 infra/**/crash.log
-

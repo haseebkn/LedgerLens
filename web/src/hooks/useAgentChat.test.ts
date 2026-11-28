@@ -1,17 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { useAgentChat, type StreamFn } from "./useAgentChat.js";
+import { buildChatHistory, MAX_MESSAGE_CHARS, useAgentChat, type ChatMessage, type StreamFn } from "./useAgentChat.js";
 import type { AgentStreamEvent } from "financial-context-agent/streaming-types";
 
 async function* fakeStream(events: AgentStreamEvent[]): AsyncGenerator<AgentStreamEvent> {
   for (const e of events) yield e;
 }
 
-// A real stream always ends with a `done` or `error` event — an empty
-// stream is not a realistic fixture (the hook correctly leaves a message
-// with no terminal event stuck in "streaming", which is the right
-// behavior, not a bug). Fixtures that don't care about the terminal event
-// use this to reach a normal "done" end state.
+// A successful turn must contain an explicit completion event. Disconnects
+// can terminate the transport before that event reaches the browser.
 const DONE_EVENT: AgentStreamEvent = {
   type: "done",
   traceId: "t1",
@@ -36,7 +33,7 @@ describe("useAgentChat", () => {
     expect(result.current.messages[1]).toMatchObject({ role: "assistant", status: "done" });
   });
 
-  it("leaves the assistant message in 'streaming' state if the stream ends with no terminal event", async () => {
+  it("marks a disconnected partial answer as failed and releases the input", async () => {
     const streamFn: StreamFn = () => fakeStream([{ type: "text_delta", traceId: "t1", text: "partial" }]);
     const { result } = renderHook(() => useAgentChat(streamFn));
 
@@ -44,7 +41,9 @@ describe("useAgentChat", () => {
       await result.current.send("q");
     });
 
-    expect(result.current.messages[1]).toMatchObject({ status: "streaming", content: "partial" });
+    expect(result.current.messages[1]).toMatchObject({ status: "error", content: "partial" });
+    expect(result.current.messages[1]?.errorMessage).toContain("connection ended");
+    expect(result.current.isStreaming).toBe(false);
   });
 
   it("accumulates text_delta events into the assistant message content", async () => {
@@ -149,6 +148,7 @@ describe("useAgentChat", () => {
 
   it("marks the assistant message errored when the stream generator throws", async () => {
     const streamFn: StreamFn = async function* () {
+      yield* [];
       throw new Error("network exploded");
     };
     const { result } = renderHook(() => useAgentChat(streamFn));
@@ -199,7 +199,7 @@ describe("useAgentChat", () => {
     const receivedHistories: unknown[] = [];
     const streamFn: StreamFn = (_msg, history) => {
       receivedHistories.push(history);
-      return fakeStream([DONE_EVENT]);
+      return fakeStream([{ type: "text_delta", traceId: "t1", text: "answer" }, DONE_EVENT]);
     };
     const { result } = renderHook(() => useAgentChat(streamFn));
 
@@ -213,7 +213,134 @@ describe("useAgentChat", () => {
     expect(receivedHistories[0]).toEqual([]);
     expect(receivedHistories[1]).toEqual([
       { role: "user", content: "first" },
-      { role: "assistant", content: "" },
+      { role: "assistant", content: "answer" },
     ]);
+  });
+
+  it("ignores simultaneous sends before React has rendered the busy state", async () => {
+    const streamFn = vi.fn<StreamFn>(() => fakeStream([DONE_EVENT]));
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => {
+      await Promise.all([result.current.send("first"), result.current.send("duplicate")]);
+    });
+    expect(streamFn).toHaveBeenCalledTimes(1);
+    expect(result.current.messages).toHaveLength(2);
+  });
+
+  it("rejects empty and oversized input without starting a request", async () => {
+    const streamFn = vi.fn<StreamFn>(() => fakeStream([DONE_EVENT]));
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => {
+      await result.current.send("   ");
+      await result.current.send("x".repeat(MAX_MESSAGE_CHARS + 1));
+    });
+    expect(streamFn).not.toHaveBeenCalled();
+    expect(result.current.messages).toHaveLength(0);
+  });
+
+  it("keeps recoverable errors from poisoning a successfully completed answer", async () => {
+    const { result } = renderHook(() => useAgentChat(() => fakeStream([
+      { type: "error", traceId: "t1", message: "retrying", fatal: false },
+      { type: "text_delta", traceId: "t1", text: "Recovered" },
+      DONE_EVENT,
+    ])));
+    await act(async () => { await result.current.send("q"); });
+    expect(result.current.messages[1]).toMatchObject({ status: "done", content: "Recovered" });
+    expect(result.current.messages[1]?.errorMessage).toBeUndefined();
+  });
+
+  it("stops unfinished tools and spans when the transport closes", async () => {
+    const { result } = renderHook(() => useAgentChat(() => fakeStream([
+      { type: "tool_call", traceId: "t1", toolCallId: "tc1", name: "search_context", input: {} },
+      { type: "span_start", traceId: "t1", spanId: "s1", spanType: "tool_exec" },
+    ])));
+    await act(async () => { await result.current.send("q"); });
+    expect(result.current.messages[1]?.toolTimeline[0]?.status).toBe("error");
+    expect(result.current.messages[1]?.spans[0]?.status).toBe("error");
+  });
+
+  it("aborts the active transport on stop and unmount", async () => {
+    const signals: AbortSignal[] = [];
+    const streamFn: StreamFn = async function* (_message, _history, signal) {
+      signals.push(signal!);
+      await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
+      yield* [];
+    };
+    const { result, unmount } = renderHook(() => useAgentChat(streamFn));
+    let sending: Promise<void>;
+    act(() => { sending = result.current.send("first"); });
+    await act(async () => { result.current.stop(); await sending; });
+    expect(signals[0]?.aborted).toBe(true);
+    expect(result.current.messages[1]).toMatchObject({ status: "stopped", errorMessage: expect.stringContaining("Stopped") });
+    expect(result.current.isStreaming).toBe(false);
+    // A stopped answer is not trusted history for the next turn.
+    expect(buildChatHistory(result.current.messages, "next")).toEqual([]);
+    act(() => { sending = result.current.send("second"); });
+    await act(async () => { unmount(); await sending; });
+    expect(signals[1]?.aborted).toBe(true);
+  });
+});
+
+describe("first-token timing", () => {
+  it("keeps the agent's first-token time from the done event", async () => {
+    const streamFn: StreamFn = () => fakeStream([
+      { type: "text_delta", traceId: "t1", text: "Hi" },
+      { ...DONE_EVENT, timeToFirstTokenMs: 354 } as AgentStreamEvent,
+    ]);
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => { await result.current.send("q"); });
+    expect(result.current.messages[1]).toMatchObject({ status: "done", timeToFirstTokenMs: 354 });
+  });
+});
+
+describe("citation warnings", () => {
+  it("collects warnings on the assistant message", async () => {
+    const streamFn: StreamFn = () => fakeStream([
+      { type: "text_delta", traceId: "t1", text: "Rent was $900." },
+      { type: "citation_warning", traceId: "t1", figure: "$900", kind: "amount", sentence: "Rent was $900.", reason: "uncited", citedIds: [] },
+      DONE_EVENT,
+    ]);
+    const { result } = renderHook(() => useAgentChat(streamFn));
+    await act(async () => { await result.current.send("rent?"); });
+    expect(result.current.messages[1]).toMatchObject({
+      status: "done", citationWarnings: [{ figure: "$900", reason: "uncited" }],
+    });
+  });
+});
+
+describe("bounded chat history", () => {
+  const turn = (index: number, content = `message ${index}`): ChatMessage[] => ["user", "assistant"].map((role) => ({
+    id: `${index}-${role}`, role: role as ChatMessage["role"], content, status: "done",
+    toolTimeline: [], spans: [], citedRowIds: [],
+  }));
+
+  it("sends the most recent 20 complete turns", () => {
+    const messages = Array.from({ length: 25 }, (_, i) => turn(i)).flat();
+    const history = buildChatHistory(messages, "next");
+    expect(history).toHaveLength(40);
+    expect(history[0]?.content).toBe("message 5");
+    expect(history[39]?.content).toBe("message 24");
+  });
+
+  it("omits failed, blank and oversized answers as entire pairs", () => {
+    const failed = turn(1);
+    failed[1]!.status = "error";
+    const blank = turn(2);
+    blank[1]!.content = "";
+    const huge = turn(3);
+    huge[1]!.content = "x".repeat(8001);
+    expect(buildChatHistory([...turn(0), ...failed, ...blank, ...huge], "next")).toEqual([
+      { role: "user", content: "message 0" }, { role: "assistant", content: "message 0" },
+    ]);
+  });
+
+  it("respects both combined character and encoded body limits", () => {
+    for (const content of ["x".repeat(8000), "界".repeat(8000), "\u0000".repeat(8000)]) {
+      const messages = Array.from({ length: 25 }, (_, i) => turn(i, content)).flat();
+      const history = buildChatHistory(messages, content);
+      expect(history.length % 2).toBe(0);
+      expect(history.reduce((sum, item) => sum + item.content.length, content.length)).toBeLessThanOrEqual(64000);
+      expect(new TextEncoder().encode(JSON.stringify({ message: content, history })).byteLength).toBeLessThanOrEqual(128 * 1024);
+    }
   });
 });

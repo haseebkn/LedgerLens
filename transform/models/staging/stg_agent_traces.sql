@@ -31,12 +31,16 @@ SELECT
     CAST(raw_payload->>'$.errored' AS BOOLEAN) AS errored,
     (raw_payload->>'$.error_message') AS error_message,
     CAST(raw_payload->>'$.citations_valid' AS BOOLEAN) AS citations_valid,
+    -- Absent on traces written before the numeric grounding check existed.
+    COALESCE(CAST(raw_payload->>'$.citation_warnings' AS INTEGER), 0) AS citation_warnings,
     CAST(raw_payload->>'$.input_tokens' AS INTEGER) AS input_tokens,
     CAST(raw_payload->>'$.output_tokens' AS INTEGER) AS output_tokens,
     CAST(raw_payload->>'$.cache_creation_input_tokens' AS INTEGER) AS cache_creation_input_tokens,
     CAST(raw_payload->>'$.cache_read_input_tokens' AS INTEGER) AS cache_read_input_tokens,
     CAST(raw_payload->>'$.cost_usd' AS DOUBLE) AS cost_usd,
     CAST(raw_payload->>'$.total_duration_ms' AS INTEGER) AS total_duration_ms,
+    -- NULL on traces written before first-token timing existed.
+    CAST(raw_payload->>'$.time_to_first_token_ms' AS INTEGER) AS time_to_first_token_ms,
     json_extract(raw_payload, '$.tool_calls') AS tool_calls_json,
     extracted_at,
     run_id
@@ -53,12 +57,14 @@ SELECT
     CAST(NULL AS BOOLEAN) AS errored,
     CAST(NULL AS VARCHAR) AS error_message,
     CAST(NULL AS BOOLEAN) AS citations_valid,
+    CAST(NULL AS INTEGER) AS citation_warnings,
     CAST(NULL AS INTEGER) AS input_tokens,
     CAST(NULL AS INTEGER) AS output_tokens,
     CAST(NULL AS INTEGER) AS cache_creation_input_tokens,
     CAST(NULL AS INTEGER) AS cache_read_input_tokens,
     CAST(NULL AS DOUBLE) AS cost_usd,
     CAST(NULL AS INTEGER) AS total_duration_ms,
+    CAST(NULL AS INTEGER) AS time_to_first_token_ms,
     CAST(NULL AS JSON) AS tool_calls_json,
     CAST(NULL AS TIMESTAMP) AS extracted_at,
     CAST(NULL AS VARCHAR) AS run_id

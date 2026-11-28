@@ -11,6 +11,7 @@ import {
   validateCitations,
 } from "./lib/citations.js";
 import { addUsage, emptyUsage, type RawUsage } from "./lib/usage.js";
+import { checkNumericGrounding, extractEvidence, type Evidence } from "./lib/grounding.js";
 import type { AgentStreamEvent, SpanType } from "./streaming-types.js";
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -53,9 +54,11 @@ export async function* runAgentTurn(params: {
   userMessage: string;
   traceId?: string;
   now?: Date;
+  signal?: AbortSignal;
 }): AsyncGenerator<AgentStreamEvent> {
   const traceId = params.traceId ?? randomUUID();
   const seenRowIds = new Set<string>();
+  const evidence: Evidence = new Map();
   let usage = emptyUsage();
   const toolNameById = new Map<string, string>();
 
@@ -80,6 +83,9 @@ export async function* runAgentTurn(params: {
   let finalStopReason = "end_turn";
   let iterationCount = 0;
   const startedAt = Date.now();
+  // Time from the start of the turn to the first model text the user sees.
+  // Notices the loop appends itself (budget/iteration limits) don't count.
+  let firstTokenMs: number | null = null;
 
   // Tracks whichever span is currently open, so the outer catch below can
   // close it (isError: true) before yielding the error event. Without this,
@@ -88,32 +94,63 @@ export async function* runAgentTurn(params: {
   // span_start with no matching span_end — a dangling span in the trace.
   // Verified this actually happens: a real 401 arrives while llm_call's
   // span is open, not before it starts.
-  let openSpan: { spanId: string; spanType: SpanType; startedAt: number } | null = null;
+  let openSpan: { spanId: string; spanType: SpanType; startedAt: number; timeToFirstTokenMs?: number } | null = null;
 
   try {
+    params.signal?.throwIfAborted();
     for await (const stream of runner) {
+      params.signal?.throwIfAborted();
       iterationCount++;
       const llmSpanId = randomUUID();
       const llmSpanStart = Date.now();
       openSpan = { spanId: llmSpanId, spanType: "llm_call", startedAt: llmSpanStart };
       yield { type: "span_start", traceId, spanId: llmSpanId, spanType: "llm_call" };
 
-      const events: AgentStreamEvent[] = [];
-      stream.on("text", (delta) => events.push({ type: "text_delta", traceId, text: delta }));
-      stream.on("thinking", (delta) => events.push({ type: "thinking_delta", traceId, text: delta }));
-
-      const finalMessage = await stream.finalMessage();
-
-      // Separate this iteration's prose from the previous one's. Without it
-      // the client concatenates every segment raw, producing run-ons like
-      // "…from your transaction data.Now the precise total…". The separator
-      // is streamed as a delta (rather than only inserted server-side) so a
-      // client accumulating text_delta events ends up with exactly the same
-      // string as finalText below.
-      if (textSegments.length > 0 && events.some((ev) => ev.type === "text_delta")) {
-        yield { type: "text_delta", traceId, text: "\n\n" };
+      const abortStream = () => stream.abort();
+      params.signal?.addEventListener("abort", abortStream, { once: true });
+      let finalMessage;
+      let spanFirstTokenMs: number | undefined;
+      try {
+        if (params.signal?.aborted) abortStream();
+        params.signal?.throwIfAborted();
+        // Consume the SDK's async stream directly. Waiting for finalMessage()
+        // before draining callback events used to buffer the entire answer.
+        let emittedText = false;
+        let pendingBlockSeparator = false;
+        for await (const event of stream) {
+          params.signal?.throwIfAborted();
+          let delta = "";
+          if (event.type === "content_block_start" && event.content_block.type === "text") {
+            pendingBlockSeparator = emittedText;
+            delta = event.content_block.text;
+          } else if (event.type === "content_block_delta") {
+            if (event.delta.type === "text_delta") delta = event.delta.text;
+            if (event.delta.type === "thinking_delta") {
+              yield { type: "thinking_delta", traceId, text: event.delta.thinking };
+            }
+          }
+          if (delta) {
+            if (spanFirstTokenMs === undefined) {
+              spanFirstTokenMs = Date.now() - llmSpanStart;
+              // Kept on the open span too, so a turn that fails mid-answer
+              // still records when its first token arrived.
+              if (openSpan) openSpan.timeToFirstTokenMs = spanFirstTokenMs;
+            }
+            if (firstTokenMs === null) firstTokenMs = Date.now() - startedAt;
+            if (!emittedText && textSegments.length > 0) {
+              yield { type: "text_delta", traceId, text: "\n\n" };
+            } else if (pendingBlockSeparator) {
+              yield { type: "text_delta", traceId, text: "\n" };
+            }
+            pendingBlockSeparator = false;
+            emittedText = true;
+            yield { type: "text_delta", traceId, text: delta };
+          }
+        }
+        finalMessage = await stream.finalMessage();
+      } finally {
+        params.signal?.removeEventListener("abort", abortStream);
       }
-      for (const ev of events) yield ev;
 
       const turnUsage = finalMessage.usage as RawUsage;
       usage = addUsage(usage, turnUsage, env.AGENT_MODEL);
@@ -126,6 +163,7 @@ export async function* runAgentTurn(params: {
         spanType: "llm_call",
         durationMs: Date.now() - llmSpanStart,
         isError: false,
+        ...(spanFirstTokenMs !== undefined ? { timeToFirstTokenMs: spanFirstTokenMs } : {}),
         usage: {
           inputTokens: turnUsage.input_tokens ?? 0,
           outputTokens: turnUsage.output_tokens ?? 0,
@@ -136,17 +174,26 @@ export async function* runAgentTurn(params: {
       openSpan = null;
 
       const toolUseBlocks = finalMessage.content.filter(isToolUseBlock);
-      for (const block of toolUseBlocks) {
-        toolNameById.set(block.id, block.name);
-        yield { type: "tool_call", traceId, toolCallId: block.id, name: block.name, input: block.input };
-      }
 
-      if (toolUseBlocks.length > 0) {
+      // Count cache reads and writes as working tokens too: input_tokens
+      // excludes both in Anthropic usage. Warm-cache turns need the same cap.
+      const workingTokens = usage.inputTokens + usage.outputTokens +
+        usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
+      const budgetReached = workingTokens >= env.TASK_BUDGET_TOKENS;
+      const iterationsReached = iterationCount >= env.MAX_TOOL_ITERATIONS;
+
+      if (toolUseBlocks.length > 0 && !budgetReached && !iterationsReached) {
+        params.signal?.throwIfAborted();
+        for (const block of toolUseBlocks) {
+          toolNameById.set(block.id, block.name);
+          yield { type: "tool_call", traceId, toolCallId: block.id, name: block.name, input: block.input };
+        }
         const toolSpanId = randomUUID();
         const toolLabel = toolUseBlocks.map((b) => b.name).join("+");
         openSpan = { spanId: toolSpanId, spanType: "tool_exec", startedAt: Date.now() };
         yield { type: "span_start", traceId, spanId: toolSpanId, spanType: "tool_exec", label: toolLabel };
 
+        params.signal?.throwIfAborted();
         const batchStart = Date.now();
         const toolResponse = await runner.generateToolResponse();
         const durationMs = Date.now() - batchStart;
@@ -159,7 +206,10 @@ export async function* runAgentTurn(params: {
             const block = rb as { type?: string; tool_use_id?: string; content?: unknown; is_error?: boolean };
             if (block.type !== "tool_result") continue;
             const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-            for (const rowId of extractRowIdsFromToolResult(text)) seenRowIds.add(rowId);
+            if (!block.is_error) {
+              for (const rowId of extractRowIdsFromToolResult(text)) seenRowIds.add(rowId);
+              extractEvidence(text, evidence);
+            }
             if (block.is_error) batchHadError = true;
 
             yield {
@@ -204,13 +254,17 @@ export async function* runAgentTurn(params: {
       // (bounded resource usage per turn). Only breaks when the loop would
       // otherwise continue (a tool call is pending) — a turn that finished
       // naturally never gets cut off by this.
-      if (toolUseBlocks.length > 0 && usage.inputTokens + usage.outputTokens >= env.TASK_BUDGET_TOKENS) {
-        finalStopReason = "task_budget_reached";
-        if (!finalText.trim()) {
-          finalText = "I've used my working budget for this turn before finishing. Ask again to continue.";
-        }
+      if (toolUseBlocks.length > 0 && (budgetReached || iterationsReached)) {
+        finalStopReason = budgetReached ? "task_budget_reached" : "max_iterations_reached";
+        const notice = budgetReached
+          ? "I've reached the working budget for this turn before finishing. Please narrow the question and try again."
+          : "I've reached the tool iteration limit before finishing. Please narrow the question and try again.";
+        const suffix = `${finalText.trim() ? "\n\n" : ""}${notice}`;
+        finalText += suffix;
+        yield { type: "text_delta", traceId, text: suffix };
         break;
       }
+      params.signal?.throwIfAborted();
     }
   } catch (e) {
     if (openSpan) {
@@ -221,6 +275,7 @@ export async function* runAgentTurn(params: {
         spanType: openSpan.spanType,
         durationMs: Date.now() - openSpan.startedAt,
         isError: true,
+        ...(openSpan.timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs: openSpan.timeToFirstTokenMs } : {}),
       };
     }
     yield {
@@ -281,12 +336,20 @@ export async function* runAgentTurn(params: {
     yield { type: "citation", traceId, rowId, source: source ?? "unknown" };
   }
 
+  // Numeric grounding runs on the final (post-repair) text. Like citation
+  // repair, it can only annotate what already streamed: the UI marks the
+  // flagged figures "Unverified" rather than hiding them.
+  for (const warning of checkNumericGrounding(finalText, evidence)) {
+    yield { type: "citation_warning", traceId, ...warning };
+  }
+
   yield {
     type: "done",
     traceId,
     stopReason: finalStopReason,
     usage,
     totalDurationMs: Date.now() - startedAt,
+    timeToFirstTokenMs: firstTokenMs,
     iterations: iterationCount,
     repaired,
   };

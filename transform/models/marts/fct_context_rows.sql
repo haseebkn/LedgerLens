@@ -2,7 +2,8 @@
   config(
     materialized='incremental',
     unique_key='row_id',
-    incremental_strategy='delete+insert'
+    incremental_strategy='delete+insert',
+    pre_hook="{{ prune_deleted_context_rows() }}"
   )
 }}
 
@@ -15,8 +16,13 @@ WITH calendar_events AS (
         -- Generate narrative text summary for context
         'Calendar Event: ' || COALESCE(summary, '(No Title)') ||
         ' at ' || COALESCE(location, 'No Location') ||
-        ' from ' || COALESCE(strftime(start_time, '%Y-%m-%d %H:%M'), 'N/A') ||
-        ' to ' || COALESCE(strftime(end_time, '%Y-%m-%d %H:%M'), 'N/A') ||
+        CASE WHEN all_day THEN
+            ' (all-day) from ' || source_start || ' to ' || source_end || ' (end date exclusive)'
+        WHEN time_zone_known THEN
+            ' from ' || strftime(start_time, '%Y-%m-%dT%H:%M:%SZ') ||
+            ' to ' || strftime(end_time, '%Y-%m-%dT%H:%M:%SZ') || ' (UTC)'
+        ELSE ' from ' || COALESCE(source_start, 'N/A') ||
+             ' to ' || COALESCE(source_end, 'N/A') || ' (timezone unspecified)' END ||
         '. Description: ' || COALESCE(description, '(None)') AS summary_text,
         -- Construct JSON string for structured fallback
         to_json({
@@ -25,6 +31,13 @@ WITH calendar_events AS (
             'description': description,
             'start_time': start_time,
             'end_time': end_time,
+            'source_start': source_start,
+            'source_end': source_end,
+            'source_start_zone': source_start_zone,
+            'source_end_zone': source_end_zone,
+            'all_day': all_day,
+            'start_time_utc': CASE WHEN NOT all_day AND time_zone_known THEN strftime(start_time, '%Y-%m-%dT%H:%M:%SZ') END,
+            'end_time_utc': CASE WHEN NOT all_day AND time_zone_known THEN strftime(end_time, '%Y-%m-%dT%H:%M:%SZ') END,
             'location': location,
             'organizer_email': organizer_email
         }) AS raw_payload
@@ -104,11 +117,8 @@ SELECT
     raw_payload
 FROM unioned
 
-{% if is_incremental() %}
-  -- On incremental runs, only reprocess rows extracted since the last run.
-  -- Watermarking on extracted_at (not event_timestamp) ensures a row whose
-  -- underlying state changes after first ingest (a filled order, an updated
-  -- or removed Plaid transaction) is re-picked-up and merged via unique_key,
-  -- rather than silently excluded because its event_timestamp is in the past.
-  WHERE extracted_at > (SELECT COALESCE(MAX(extracted_at), '1970-01-01'::TIMESTAMP) FROM {{ this }})
-{% endif %}
+-- Merge the complete deduplicated state on every build. A global extraction
+-- watermark drops late-arriving files from a slower source (and rows arriving
+-- at exactly the watermark). The landing zone is already scanned in full by
+-- the upstream views, so filtering here cannot avoid that work. The pre-hook
+-- propagates deletions, which delete+insert alone cannot see in its input.
