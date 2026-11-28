@@ -1,31 +1,104 @@
 name: Deploy to AWS
 
-# Manual only — this pushes real images to ECR and redeploys live ECS
-# services. Requires AWS_ROLE_ARN (an OIDC-assumable role with ECR push +
-# ECS update-service permissions) configured as a repo secret; see
-# infra/aws/README.md for the underlying infrastructure.
+# Every merge to main that passes CI deploys the Always-Free Serverless stack
+# (CloudFront + S3 + AWS Lambda Response Streaming) by commit SHA:
+#   1. Builds the deterministic synthetic DuckDB warehouse (scripts/seed/ + dbt).
+#   2. Packages the Node.js 22 agent + production deps + warehouse as an
+#      immutable SHA-tagged Lambda zip uploaded to S3.
+#   3. Publishes a new Lambda version and points the `live` alias to it.
+#   4. Syncs the built React SPA to S3 and invalidates CloudFront.
+#   5. Runs scripts/smoke/smoke.mjs against the live HTTPS CloudFront URL.
+#      If the smoke test fails, flips the `live` alias back to the previous
+#      Lambda version automatically.
+#
+# Repository settings this needs (all printed by `terraform output`):
+#   secret   AWS_ROLE_ARN                OIDC role (from terraform output github_deploy_role_arn)
+#   variable DEPLOY_ENABLED              "true" once the AWS stack exists
+#   variable APP_URL                     https://<id>.cloudfront.net (or custom domain)
+#   variable WEB_BUCKET                  from terraform output web_bucket
+#   variable ARTIFACTS_BUCKET            from terraform output artifacts_bucket
+#   variable LAMBDA_FUNCTION_NAME        from terraform output lambda_function_name
+#   variable CLOUDFRONT_DISTRIBUTION_ID  from terraform output cloudfront_distribution_id
+#   variable AWS_REGION                  optional; defaults to us-east-1
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      services:
-        description: "Comma-separated services to build & deploy (agent,web,retrieval)"
-        default: "agent,web,retrieval"
-        required: true
 
 permissions:
   id-token: write
   contents: read
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY_ALIAS: financial-context
-  ECS_CLUSTER: financial-context-cluster
+# One deploy at a time, in order; never cancel one halfway.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      WEB_BUCKET: ${{ vars.WEB_BUCKET }}
+      ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+      LAMBDA_FUNCTION_NAME: ${{ vars.LAMBDA_FUNCTION_NAME }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      APP_URL: ${{ vars.APP_URL }}
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+
+      - name: Set up Python 3.11 (for synthetic warehouse build)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build deterministic synthetic DuckDB warehouse
+        run: |
+          set -euo pipefail
+          grep -E '^(dbt-core|dbt-duckdb|duckdb)==' requirements.txt > /tmp/dbt-requirements.txt
+          pip install --no-cache-dir -r /tmp/dbt-requirements.txt
+          python scripts/seed/generate.py --out .demo/raw_data
+          cd transform
+          RAW_DATA_ROOT=../.demo/raw_data DUCKDB_PATH=../.demo/financial_engine.db \
+            dbt build --full-refresh --profiles-dir .
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Build agent and web frontend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build --workspace agent
+          npm run build --workspace web
+
+      - name: Package SHA-tagged Lambda zip (agent production deps only)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/lambda-deps/agent /tmp/lambda-deps/web
+          cp package.json package-lock.json /tmp/lambda-deps/
+          cp agent/package.json /tmp/lambda-deps/agent/package.json
+          cp web/package.json /tmp/lambda-deps/web/package.json
+          npm --prefix /tmp/lambda-deps ci --omit=dev --workspace agent
+          node scripts/package-lambda.mjs \
+            --warehouse .demo/financial_engine.db \
+            --node-modules /tmp/lambda-deps/node_modules \
+            --out /tmp/lambda-bundle
+          (cd /tmp/lambda-bundle && zip -qr "/tmp/agent-${COMMIT_SHA}.zip" .)
+          ls -lh "/tmp/agent-${COMMIT_SHA}.zip"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -33,34 +106,60 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, push, and redeploy each requested service
-        env:
-          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
-          SERVICES: ${{ github.event.inputs.services }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Record current live Lambda version (for automatic rollback)
         run: |
           set -euo pipefail
-          IFS=',' read -ra SVCS <<< "$SERVICES"
-          for svc in "${SVCS[@]}"; do
-            case "$svc" in
-              agent)     dockerfile="agent/Dockerfile" ;;
-              web)       dockerfile="web/Dockerfile" ;;
-              retrieval) dockerfile="vector_prep/Dockerfile" ;;
-              *) echo "Unknown service: $svc" >&2; exit 1 ;;
-            esac
+          prev=$(aws lambda get-alias \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --name live \
+            --query FunctionVersion --output text)
+          echo "PREV_VERSION=$prev" >> "$GITHUB_ENV"
+          echo "Previous live Lambda version: $prev"
 
-            repo="$REGISTRY/$ECR_REGISTRY_ALIAS/$svc"
-            docker build -f "$dockerfile" -t "$repo:$IMAGE_TAG" -t "$repo:latest" .
-            docker push "$repo:$IMAGE_TAG"
-            docker push "$repo:latest"
+      - name: Upload SHA-tagged bundle and publish new Lambda version
+        run: |
+          set -euo pipefail
+          s3_key="releases/agent-${COMMIT_SHA}.zip"
+          aws s3 cp "/tmp/agent-${COMMIT_SHA}.zip" "s3://${ARTIFACTS_BUCKET}/${s3_key}"
+          new_version=$(aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --s3-bucket "$ARTIFACTS_BUCKET" \
+            --s3-key "$s3_key" \
+            --publish \
+            --query Version --output text)
+          aws lambda wait function-updated --function-name "$LAMBDA_FUNCTION_NAME"
+          aws lambda update-alias \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --name live \
+            --function-version "$new_version"
+          echo "DEPLOYED_VERSION=$new_version" >> "$GITHUB_ENV"
+          echo "Updated live alias -> version $new_version"
 
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "$ECR_REGISTRY_ALIAS-$svc" \
-              --force-new-deployment \
-              --region "$AWS_REGION"
-          done
+      - name: Sync React SPA to S3 and invalidate CloudFront
+        run: |
+          set -euo pipefail
+          # Hashed Vite assets cache aggressively; index.html always revalidates.
+          aws s3 sync web/dist/ "s3://${WEB_BUCKET}/" --delete \
+            --exclude "index.html" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp web/dist/index.html "s3://${WEB_BUCKET}/index.html" \
+            --cache-control "no-cache"
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/index.html" "/"
+
+      # Health, readiness, 401 without sign-in, demo sign-in, and one real
+      # streamed question that must carry a citation.
+      - name: Smoke test the live HTTPS URL
+        env:
+          BASE_URL: ${{ env.APP_URL }}
+        run: node scripts/smoke/smoke.mjs
+
+      - name: Roll back live Lambda alias if smoke test failed
+        if: failure() && env.PREV_VERSION != '' && env.DEPLOYED_VERSION != '' && env.PREV_VERSION != env.DEPLOYED_VERSION
+        run: |
+          echo "Rolling back live alias from v${DEPLOYED_VERSION} -> v${PREV_VERSION}"
+          aws lambda update-alias \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --name live \
+            --function-version "$PREV_VERSION"

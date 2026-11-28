@@ -11,7 +11,18 @@ RUN npm ci
 
 COPY agent/ agent/
 RUN npm run build --workspace agent
-RUN npm prune --omit=dev
+
+# Production dependencies of the agent workspace only. `npm prune --omit=dev`
+# after a full install kept the web workspace's runtime packages (react,
+# react-dom, scheduler) and both workspace links: 28 top-level packages
+# instead of 12. web/package.json is still copied because npm ci validates
+# the lockfile against every workspace.
+FROM node:22-slim AS deps
+WORKDIR /repo
+COPY package.json package-lock.json ./
+COPY agent/package.json agent/package.json
+COPY web/package.json web/package.json
+RUN npm ci --omit=dev --workspace agent
 
 FROM node:22-slim AS runtime
 WORKDIR /repo
@@ -22,7 +33,7 @@ ENV HOST=0.0.0.0
 # preserve that same relative layout (agent/ alongside root node_modules)
 # rather than collapsing into a flat /app, since Node's resolution walks up
 # through node_modules directories to find them.
-COPY --from=build /repo/node_modules ./node_modules
+COPY --from=deps /repo/node_modules ./node_modules
 COPY --from=build /repo/agent/package.json ./agent/package.json
 COPY --from=build /repo/agent/dist ./agent/dist
 COPY --from=build /repo/agent/evals/reports ./agent/evals/reports
@@ -36,3 +47,14 @@ WORKDIR /repo/agent
 EXPOSE 8787
 USER node
 CMD ["node", "dist/index.js"]
+
+# Demo: the synthetic warehouse from scripts/seed/Dockerfile, baked in
+# read-only, so the image runs with nothing mounted. Needs the `warehouse`
+# build context (see scripts/seed/Dockerfile or docker-compose.yml).
+FROM runtime AS demo
+COPY --from=warehouse /out/financial_engine.db /data/financial_engine.db
+ENV DUCKDB_PATH=/data/financial_engine.db
+
+# Default target (last stage): the image with no data, which mounts or
+# bakes its warehouse at deploy time.
+FROM runtime AS production

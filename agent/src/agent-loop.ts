@@ -14,7 +14,10 @@ import { addUsage, emptyUsage, type RawUsage } from "./lib/usage.js";
 import { checkNumericGrounding, extractEvidence, type Evidence } from "./lib/grounding.js";
 import type { AgentStreamEvent, SpanType } from "./streaming-types.js";
 
-const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+const client = new Anthropic({
+  apiKey: env.ANTHROPIC_API_KEY,
+  ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+});
 
 const MAX_TOKENS = 4096;
 

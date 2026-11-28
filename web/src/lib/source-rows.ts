@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import { apiFetch } from "./api.js";
 
 /**
  * The record behind a citation, as returned by GET /api/rows/:rowId
@@ -20,7 +21,7 @@ export type RowLookup =
 export type FetchRow = (rowId: string, signal: AbortSignal) => Promise<RowLookup>;
 
 export const defaultFetchRow: FetchRow = async (rowId, signal) => {
-  const response = await fetch(`/api/rows/${encodeURIComponent(rowId)}`, { signal });
+  const response = await apiFetch(`/api/rows/${encodeURIComponent(rowId)}`, { signal });
   const body = (await response.json().catch(() => null)) as (RowLookup & { error?: string }) | null;
   if (!response.ok || !body) throw new Error(body?.error ?? `Could not load ${rowId} (${response.status})`);
   return body;

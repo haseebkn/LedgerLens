@@ -100,4 +100,30 @@ describe("search_context tool", () => {
     await expect(searchContextTool.run({ query: "coffee", limit: 5 }))
       .rejects.toThrow(/search_context failed:.*401/);
   });
+
+  it("uses in-process DuckDB retrieval without HTTP when RETRIEVAL_MODE=local", async () => {
+    const { env } = await import("../config.js");
+    const prev = env.RETRIEVAL_MODE;
+    (env as { RETRIEVAL_MODE: "http" | "local" }).RETRIEVAL_MODE = "local";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.mocked(queryRowsParams).mockResolvedValue([
+      {
+        row_id: "plaid_coffee_1",
+        summary_text: "Financial Transaction: Spent $4.33 at Starbucks under category Food and Drink on 2026-11-20.",
+        source: "plaid",
+        record_date: "2026-11-20 00:00:00",
+        raw_payload: JSON.stringify({ name: "Starbucks", category: "Food and Drink" }),
+      },
+    ]);
+
+    try {
+      const result = JSON.parse((await searchContextTool.run({ query: "coffee", limit: 5 })) as string);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result[0].row_id).toBe("plaid_coffee_1");
+      expect(result[0].source).toBe("plaid");
+    } finally {
+      (env as { RETRIEVAL_MODE: "http" | "local" }).RETRIEVAL_MODE = prev;
+    }
+  });
 });

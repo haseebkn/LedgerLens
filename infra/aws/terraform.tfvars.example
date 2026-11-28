@@ -2,12 +2,15 @@ aws_region   = "us-east-1"
 project_name = "financial-context"
 environment  = "prod"
 
-# Secrets — do not commit a real terraform.tfvars with these filled in.
-# Prefer TF_VAR_anthropic_api_key / TF_VAR_retrieval_service_token env vars,
-# or a secrets-manager-backed CI runner, over a plaintext tfvars file.
-anthropic_api_key       = "sk-ant-..."
-retrieval_service_token = "generate-a-long-random-string"
+# Optional custom domain. Leave empty to use CloudFront's built-in free
+# https://<id>.cloudfront.net URL (no domain purchase or ACM cert needed).
+domain_name     = ""
+route53_zone_id = ""
 
-agent_image_tag     = "latest"
-web_image_tag       = "latest"
-retrieval_image_tag = "latest"
+# Optional: set to your GitHub repo to auto-create the least-privilege OIDC
+# deploy role for .github/workflows/deploy.yml.
+github_repo                 = "haseebkn/LedgerLens"
+create_github_oidc_provider = false
+
+# No secrets here: store ANTHROPIC_API_KEY and DEMO_PASSWORD in SSM Parameter
+# Store (Always Free Standard SecureStrings) via AWS CLI after `terraform apply`.

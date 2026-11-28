@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentStreamEvent, UsageSummary } from "financial-context-agent/streaming-types";
 import { streamAgentEvents } from "../lib/sse.js";
+import { apiFetch, errorMessage } from "../lib/api.js";
 
 export interface ToolTimelineItem {
   toolCallId: string;
@@ -75,14 +76,15 @@ export function buildChatHistory(messages: ChatMessage[], userText: string) {
 }
 
 const defaultStreamFn: StreamFn = async function* (message, history, signal) {
-  const response = await fetch("/api/chat", {
+  const response = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, history }),
     signal,
   });
   if (!response.ok) {
-    throw new Error(`Chat request failed: ${response.status}`);
+    // 429 carries the limit and when it resets; 401 means sign in again.
+    throw new Error(await errorMessage(response, `Chat request failed: ${response.status}`));
   }
   yield* streamAgentEvents(response);
 };

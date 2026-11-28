@@ -1,0 +1,8 @@
+# Copy to backend.hcl (not committed) and run:
+#   terraform init -backend-config=backend.hcl
+# The bucket and table come from bootstrap/ (one-time, local state).
+bucket         = "financial-context-tfstate-<account-id>"
+key            = "prod/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "financial-context-tflock"
+encrypt        = true

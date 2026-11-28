@@ -1,0 +1,24 @@
+# CI override: the demo stack with a fake Anthropic API, so the container
+# smoke test needs no key and makes no paid calls.
+#
+#   ANTHROPIC_API_KEY=sk-ant-fake docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --wait web
+#   BASE_URL=http://localhost:8080 node scripts/smoke/smoke.mjs
+services:
+  fake-anthropic:
+    image: node:22-slim
+    command: ["node", "/smoke/fake-anthropic.mjs"]
+    volumes:
+      - ./scripts/smoke:/smoke:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9999/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent:
+    environment:
+      ANTHROPIC_API_KEY: sk-ant-fake-ci-not-a-real-key
+      ANTHROPIC_BASE_URL: http://fake-anthropic:9999
+    depends_on:
+      fake-anthropic:
+        condition: service_healthy

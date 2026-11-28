@@ -27,3 +27,22 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 EXPOSE 8100
 CMD ["uvicorn", "vector_prep.retrieval_service:app", "--host", "0.0.0.0", "--port", "8100"]
+
+# Demo: embeds the synthetic warehouse on CPU at build time and bakes the
+# ChromaDB store in, so the image runs with nothing mounted. Needs the
+# `warehouse` build context (see scripts/seed/Dockerfile).
+FROM runtime AS demo
+USER root
+COPY requirements.txt /tmp/requirements.txt
+# embed_context.py reads the warehouse with DuckDB's fetch_df(), which
+# needs pandas; the serving image doesn't otherwise install it.
+RUN grep -E '^duckdb==' /tmp/requirements.txt > /tmp/duckdb-requirement.txt \
+    && pip install --no-cache-dir -r /tmp/duckdb-requirement.txt "pandas>=2.2,<4"
+COPY vector_prep/embed_context.py vector_prep/embed_context.py
+COPY --from=warehouse --chown=appuser:appuser /out/financial_engine.db /repo/financial_engine.db
+USER appuser
+RUN python vector_prep/embed_context.py --device cpu --recreate \
+    && rm /repo/financial_engine.db
+
+# Default target (last stage): the store is mounted at deploy time.
+FROM runtime AS production

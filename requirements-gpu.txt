@@ -1,0 +1,7 @@
+# Everything in requirements.txt plus the CUDA 12.1 build of PyTorch, for
+# GPU embedding backfills (vector_prep/embed_context.py --device cuda).
+# torch 2.3.1 has no Python 3.13+ wheels; use Python 3.11 or 3.12.
+-r requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.3.1
+torchvision==0.18.1

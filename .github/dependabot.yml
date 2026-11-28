@@ -1,0 +1,31 @@
+# Weekly dependency updates, grouped so they arrive as a few reviewable PRs.
+# CI's npm audit step fails a PR on any high or critical advisory.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories: [/agent, /web, /vector_prep, /scripts/seed]
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: terraform
+    directories: [/infra/aws, /infra/aws/bootstrap]
+    schedule:
+      interval: weekly

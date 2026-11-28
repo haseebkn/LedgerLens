@@ -39,8 +39,10 @@ boto3>=1.34.0
 # against; the old pin only survived because local envs already had it.
 chromadb==0.5.23
 sentence-transformers==3.0.1
-torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
-torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+# torch arrives as a sentence-transformers dependency (CPU or the default
+# PyPI build). For the CUDA 12.1 build used for GPU embedding backfills,
+# install requirements-gpu.txt instead. The pins used to sit here with
+# inline --index-url options, which pip applies to the whole file.
 
 # Semantic Explorer dashboard & internal retrieval service (vector_prep/)
 fastapi>=0.115.0
