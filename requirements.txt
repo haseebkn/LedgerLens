@@ -14,7 +14,7 @@ plaid-python>=18.0.0
 # Configuration & Utilities
 python-dotenv>=1.0.1
 pyyaml>=6.0.1
-structlog>=24.1.0
+structlog>=26.1.0
 pydantic>=2.6.1
 pydantic-settings>=2.4.0
 
