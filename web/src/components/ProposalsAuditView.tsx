@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ProposalPayload } from "financial-context-agent/streaming-types";
 import { apiFetch, errorMessage } from "../lib/api.js";
+import { IngestPanel } from "./IngestPanel.js";
 import { ProposalCard } from "./ProposalCard.js";
 import { CitationChip } from "./CitationChip.js";
 import { SourceDrawerProvider } from "./SourceDrawer.js";
@@ -72,6 +73,8 @@ export function ProposalsAuditView() {
             Refresh
           </button>
         </div>
+
+        <IngestPanel onIngested={reload} />
 
         <section className="panel-section">
           <h3>Proposals ({proposals.length})</h3>

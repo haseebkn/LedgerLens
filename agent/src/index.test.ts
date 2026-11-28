@@ -180,7 +180,7 @@ describe("sign-in and limits (AUTH_MODE=cognito)", () => {
     });
 
   it.each([
-    ["POST", "/api/chat"], ["GET", "/api/traces/abc"], ["GET", "/api/metrics"],
+    ["POST", "/api/chat"], ["POST", "/api/ingest"], ["GET", "/api/traces/abc"], ["GET", "/api/metrics"],
     ["GET", "/api/rows/plaid_1"], ["GET", "/api/evals/latest"],
   ])("rejects an unauthenticated %s %s with 401", async (method, path) => {
     const secured = createApp({ authMode: "cognito", verify, limiter: new UsageLimiter(limits) });
@@ -274,5 +274,37 @@ describe("sign-in and limits (AUTH_MODE=cognito)", () => {
     expect((await fronted.request("/api/health")).status).toBe(403);
     expect((await fronted.request("/api/health", { headers: { "X-Origin-Verify": "wrong" } })).status).toBe(403);
     expect((await fronted.request("/api/health", { headers: { "X-Origin-Verify": "cf-secret-123" } })).status).toBe(200);
+  });
+
+  it("gates POST /api/ingest on advisor mode, body size, and Zod validation", async () => {
+    const noAdvisor = createApp({ authMode: "none", limiter: new UsageLimiter(limits) });
+    const disabled = await noAdvisor.request("/api/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "transcript", content: "Priya moved to 12 Water St." }),
+    });
+    expect(disabled.status).toBe(404);
+
+    const oversize = await noAdvisor.request("/api/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "transcript", content: "x".repeat(130 * 1024) }),
+    });
+    expect(oversize.status).toBe(413);
+
+    // With a stubbed pool, invalid body shape returns 400 before hitting DB.
+    const withPool = createApp({ authMode: "none", limiter: new UsageLimiter(limits), advisorPool: {} as never });
+    const badKind = await withPool.request("/api/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "pdf", content: "hi" }),
+    });
+    expect(badKind.status).toBe(400);
+    const emptyContent = await withPool.request("/api/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "eml", content: "   " }),
+    });
+    expect(emptyContent.status).toBe(400);
   });
 });
