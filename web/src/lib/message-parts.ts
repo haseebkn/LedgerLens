@@ -140,11 +140,12 @@ export function parseMessageBlocks(text: string): MessageBlock[] {
   return blocks;
 }
 
-/** Maps a row_id's prefix (calendar_/plaid_/alpaca_) to its source label. */
+/** Maps a row_id's prefix to its human-readable source label. */
 export function sourceFromRowId(rowId: string): string {
   const prefix = rowId.split("_")[0];
   switch (prefix) {
     case "calendar":
+    case "evt":
       return "Calendar";
     case "plaid":
       return "Plaid";
@@ -152,6 +153,22 @@ export function sourceFromRowId(rowId: string): string {
       return "Alpaca";
     case "computed":
       return "Computed";
+    case "hh":
+      return "Client";
+    case "acct":
+      return "Account";
+    case "pos":
+      return "Position";
+    case "txn":
+      return "Transaction";
+    case "note":
+      return "Meeting Note";
+    case "email":
+      return "Email";
+    case "task":
+      return "Task";
+    case "prop":
+      return "Proposal";
     default:
       return "Unknown";
   }

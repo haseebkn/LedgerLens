@@ -7,7 +7,8 @@ import { getComputedResult } from "./result-store.js";
  * SQL.
  */
 
-export const ROW_ID_FORMAT = /^(?:calendar|plaid|alpaca|computed)_[a-zA-Z0-9_-]{1,200}$/;
+export const ROW_ID_FORMAT =
+  /^(?:calendar|plaid|alpaca|computed|hh|acct|pos|txn|note|email|evt|task|prop)_[a-zA-Z0-9_-]{1,200}$/;
 
 export type RowLookup =
   | {

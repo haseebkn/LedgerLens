@@ -889,3 +889,194 @@
 .sign-in-button {
   align-self: flex-start;
 }
+
+/* --- Phase 3: Advisor Proposal Cards & Append-Only Audit Log --- */
+
+.message-proposals,
+.proposal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.proposals-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.proposal-card {
+  background: color-mix(in srgb, var(--bg-panel) 92%, var(--accent) 8%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.proposal-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.proposal-kind {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  margin-right: 0.5rem;
+}
+
+.proposal-household {
+  font-size: 0.92rem;
+}
+
+.status-pill {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0.14rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.status-pill--pending {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.status-pill--approved {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.status-pill--rejected {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.proposal-summary {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.proposal-diff-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+
+.proposal-diff-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 0.5rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.proposal-field-name {
+  font-family: var(--mono);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.proposal-field-change {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.proposal-old {
+  color: #f87171;
+  text-decoration: line-through;
+}
+
+.proposal-arrow {
+  color: var(--text-faint);
+}
+
+.proposal-new {
+  color: #34d399;
+  font-weight: 500;
+}
+
+.proposal-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.proposal-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.proposal-edit-field input,
+.proposal-edit-field textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.84rem;
+}
+
+.proposal-sources {
+  font-size: 0.78rem;
+}
+
+.proposal-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.proposal-btn {
+  border-radius: 7px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.proposal-btn--approve {
+  background: rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.5);
+  color: #34d399;
+}
+
+.proposal-btn--reject {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #f87171;
+}
+
+.proposal-card-footer {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+.audit-table td {
+  font-size: 0.76rem;
+  vertical-align: top;
+}

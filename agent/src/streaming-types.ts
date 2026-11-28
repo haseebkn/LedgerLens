@@ -68,6 +68,28 @@ export interface CitationEvent extends TraceMeta {
   source: string;
 }
 
+export interface ProposalPayload {
+  proposalId: string;
+  householdId: string;
+  householdName: string;
+  kind: "crm_update" | "draft_follow_up" | "create_task";
+  status: "pending" | "approved" | "rejected";
+  summary: string;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  sources: string[];
+  model: string;
+  traceId: string;
+  createdAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+}
+
+export interface ProposalCreatedEvent extends TraceMeta {
+  type: "proposal_created";
+  proposal: ProposalPayload;
+}
+
 /**
  * A dollar figure or record count in the final answer that its sentence's
  * citations don't support: either nothing is cited, or no cited row/result
@@ -127,6 +149,7 @@ export type AgentStreamEvent =
   | ToolCallEvent
   | ToolResultEvent
   | CitationEvent
+  | ProposalCreatedEvent
   | CitationWarningEvent
   | TextCorrectionEvent
   | ErrorEvent

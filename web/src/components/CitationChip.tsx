@@ -6,6 +6,14 @@ const SOURCE_COLOR: Record<string, string> = {
   Plaid: "#34d399",
   Alpaca: "#fbbf24",
   Computed: "#60a5fa",
+  Client: "#38bdf8",
+  Account: "#fbbf24",
+  Position: "#f59e0b",
+  Transaction: "#34d399",
+  "Meeting Note": "#c084fc",
+  Email: "#f472b6",
+  Task: "#2dd4bf",
+  Proposal: "#fb7185",
   Unknown: "#9ca3af",
 };
 

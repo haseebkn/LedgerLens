@@ -34,6 +34,12 @@ const EnvSchema = z.object({
   // Path to the DuckDB warehouse file, relative to the repo root.
   DUCKDB_PATH: z.string().default("../financial_engine.db"),
 
+  // Optional Postgres + pgvector connection string for Phase 3 Advisor Mode.
+  // When set, /api/chat runs the advisor toolset under Postgres RLS and
+  // exposes /api/proposals and /api/audit-log.
+  DATABASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  DEFAULT_ADVISOR_ID: z.string().min(1).default("adv_sarah"),
+
   // Retrieval backend: "http" calls the Python ChromaDB/sentence-transformers
   // service; "local" searches main_analytics.fct_context_rows in-process so
   // AWS Lambda can serve the demo without a 3 GiB Python container.

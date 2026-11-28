@@ -1,11 +1,19 @@
 import { useState } from "react";
+import type { ProposalPayload } from "financial-context-agent/streaming-types";
 import type { ChatMessage } from "../hooks/useAgentChat.js";
 import { MessageText } from "./MessageText.js";
+import { ProposalCard } from "./ProposalCard.js";
 import { ToolTimeline } from "./ToolTimeline.js";
 import { SpanWaterfall } from "./SpanWaterfall.js";
 import { formatUsd } from "../lib/format.js";
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+export function MessageBubble({
+  message,
+  onProposalUpdated,
+}: {
+  message: ChatMessage;
+  onProposalUpdated?: (updated: ProposalPayload) => void;
+}) {
   const [showTrace, setShowTrace] = useState(false);
   const isUser = message.role === "user";
 
@@ -23,6 +31,14 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         )}
 
         {message.content && <MessageText text={message.content} warnings={message.citationWarnings} />}
+
+        {message.proposals && message.proposals.length > 0 && (
+          <div className="message-proposals">
+            {message.proposals.map((proposal) => (
+              <ProposalCard key={proposal.proposalId} proposal={proposal} onUpdated={onProposalUpdated} />
+            ))}
+          </div>
+        )}
 
         {message.status === "streaming" && (message.content || message.toolTimeline.length > 0) && (
           <span className="stream-cursor" aria-hidden />

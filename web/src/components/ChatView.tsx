@@ -11,7 +11,7 @@ const SUGGESTIONS = [
 ];
 
 export function ChatView() {
-  const { messages, isStreaming, send, stop } = useAgentChat();
+  const { messages, isStreaming, send, stop, updateProposal } = useAgentChat();
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -43,7 +43,7 @@ export function ChatView() {
           </div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble key={m.id} message={m} onProposalUpdated={updateProposal} />
         ))}
         <div ref={bottomRef} />
       </div>
