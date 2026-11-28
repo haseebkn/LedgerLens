@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:22-slim AS build
+FROM node:26-slim AS build
 WORKDIR /repo
 
 # Install from the workspace root so the agent/web workspace link resolves
@@ -17,14 +17,14 @@ RUN npm run build --workspace agent
 # react-dom, scheduler) and both workspace links: 28 top-level packages
 # instead of 12. web/package.json is still copied because npm ci validates
 # the lockfile against every workspace.
-FROM node:22-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY agent/package.json agent/package.json
 COPY web/package.json web/package.json
 RUN npm ci --omit=dev --workspace agent
 
-FROM node:22-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
