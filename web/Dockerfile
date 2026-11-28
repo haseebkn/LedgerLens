@@ -13,7 +13,7 @@ COPY agent/src/streaming-types.ts agent/src/streaming-types.ts
 COPY web/ web/
 RUN npm run build --workspace web
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.29-alpine AS runtime
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /repo/web/dist /usr/share/nginx/html
